@@ -391,9 +391,8 @@ async def _retry_nonstream(text: str, plan: _Plan, req: ChatRequest, svc: Servic
 @router.post("/v1/chat/completions")
 async def chat_completions(body: ChatCompletionRequest, request: Request,
                            svc: Services = Depends(get_services)):
-    request.state.model = body.model  # logged even if it does not resolve
     spec = resolve_model(body.model, "chat")
-    request.state.model = body.model or spec.id
+    request.state.model = spec.id  # log the actual model, not the client alias
     messages = [m.model_dump() for m in body.messages]
     plan = _build_plan(body, messages, svc.settings)
     if not plan.prompt and not plan.images:

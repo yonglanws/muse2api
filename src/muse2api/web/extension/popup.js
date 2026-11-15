@@ -152,7 +152,10 @@ async function loadCfg() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       const u = tab && tab.url ? new URL(tab.url) : null;
-      if (u && /\/dashboard/.test(u.pathname)) {
+      // The console now lives at "/"; only prefill when the tab is clearly
+      // the muse2api console (title check) or the legacy /dashboard URL.
+      const isConsole = u && (/\/dashboard\/?$/.test(u.pathname) || u.pathname === "/");
+      if (isConsole && /muse2api/i.test((tab && tab.title) || "")) {
         $("base").value = u.origin;
         const k = new URLSearchParams(u.search).get("key");
         if (k) $("key").value = k;

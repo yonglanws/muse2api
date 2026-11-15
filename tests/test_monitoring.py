@@ -72,7 +72,7 @@ def test_request_logged(client, admin):
     row = _requests(client, admin)[0]
     assert row["method"] == "POST"
     assert row["path"] == "/v1/chat/completions"
-    assert row["model"] == "gpt-4o"
+    assert row["model"] == "muse-chat"  # 0.10.0: log the resolved model, not the alias
     assert row["key_id"] == key["key"]["id"]
     assert row["key_name"] == "bob"
     assert row["account_id"] == "anonymous"  # mock driver without accounts
@@ -95,7 +95,7 @@ def test_stream_and_error_logged(client, auth, admin):
     bad, streamed = _requests(client, admin)[:2]
     assert streamed["stream"] is True and streamed["status_code"] == 200
     assert bad["status_code"] == 400
-    assert bad["model"] == "muse-video"
+    assert bad["model"] is None  # rejected before any model was resolved
     assert bad["error"]
 
     assert [x["id"] for x in _requests(client, admin, status="4xx")] == [bad["id"]]
@@ -203,10 +203,14 @@ async def test_prune(settings):
 
 
 def test_dashboard_html(client):
-    r = client.get("/dashboard")
+    r = client.get("/")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     assert "<title>muse2api · 控制台</title>" in r.text
+    # The old address keeps working via a redirect.
+    legacy = client.get("/dashboard", follow_redirects=False)
+    assert legacy.status_code == 307
+    assert legacy.headers["location"] == "/"
 
 
 def _wait_task(client, auth, task_id: str) -> dict:

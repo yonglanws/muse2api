@@ -30,9 +30,8 @@ def _task_view(task: Task) -> dict:
 @router.post("/v1/videos")
 async def create_video(body: VideoCreateRequest, request: Request,
                        svc: Services = Depends(get_services)) -> dict:
-    request.state.model = body.model  # logged even if it does not resolve
     spec = resolve_model(body.model, "video")
-    request.state.model = body.model or spec.id
+    request.state.model = spec.id  # log the actual model, not the client alias
     frame_ref = body.image or body.input_reference
     first_frame = InputImage(*(await load_image_ref(frame_ref))) if frame_ref else None
     base = public_base(request)

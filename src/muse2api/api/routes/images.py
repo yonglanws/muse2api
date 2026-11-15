@@ -53,7 +53,7 @@ def _task_view(task: Task) -> dict:
 
 async def _generate(body: ImageGenerationRequest, refs: list[InputImage],
                     request: Request, svc: Services) -> dict:
-    request.state.model = body.model or resolve_model(body.model, "image").id
+    request.state.model = resolve_model(body.model, "image").id  # actual model
     if len(refs) > MAX_REFERENCE_IMAGES:
         raise InvalidRequest(f"at most {MAX_REFERENCE_IMAGES} reference images are supported")
     if body.async_:

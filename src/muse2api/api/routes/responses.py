@@ -192,9 +192,8 @@ def _response_object(resp_id: str, created: int, model: str, *, status: str = "c
 @router.post("/v1/responses")
 async def create_response(body: ResponseRequest, request: Request,
                           svc: Services = Depends(get_services)):
-    request.state.model = body.model  # logged even if it does not resolve
     spec = resolve_model(body.model, "chat")
-    request.state.model = body.model or spec.id
+    request.state.model = spec.id  # log the actual model, not the client alias
 
     own_messages = _to_messages(body)
     chain_hint = None
