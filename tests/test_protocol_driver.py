@@ -130,14 +130,16 @@ class FakeClient:
 
 
 def _driver_with_fake() -> tuple[ProtocolDriver, FakeClient]:
+    from muse2api.drivers.protocol.driver import _Conn
     driver = ProtocolDriver(Settings())
     client = FakeClient()
 
-    async def fake_client(account: Account, state) -> FakeClient:
-        state.client = client
-        return client
+    async def fake_acquire_conn(account: Account, state,
+                                preferred) -> _Conn:
+        return driver._fake_conn
 
-    driver._client = fake_client  # type: ignore[method-assign]
+    driver._fake_conn = _Conn(client=client)
+    driver._acquire_conn = fake_acquire_conn  # type: ignore[method-assign]
     return driver, client
 
 

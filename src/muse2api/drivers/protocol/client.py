@@ -141,7 +141,8 @@ class Subscription:
 
 class MuseProtocolClient:
     def __init__(self, cookies: dict[str, str], *, proxy: str | None = None,
-                 user_agent: str = USER_AGENT, ping_interval: float = 30.0) -> None:
+                 user_agent: str = USER_AGENT, ping_interval: float = 30.0,
+                 node_id: str | None = None) -> None:
         self.cookies = {k: v for k, v in cookies.items() if v}
         self.proxy = proxy or None
         self.user_agent = user_agent
@@ -162,7 +163,10 @@ class MuseProtocolClient:
             follow_redirects=False,
             headers={"User-Agent": self.user_agent, "Accept": "application/json"},
         )
-        self.node_id = str(uuid.uuid4())
+        # The node id is this client's stable device identity: follow-up turns
+        # and command registrations are bound to it, so a reconnecting pooled
+        # connection reuses the same id instead of minting a new one.
+        self.node_id = node_id or str(uuid.uuid4())
         self.closing = False
         self.timings: dict[str, float] = {}
         self.session: dict[str, Any] = {}
@@ -493,12 +497,19 @@ class MuseProtocolClient:
                       body: dict[str, Any] | None = None,
                       timeout: float = 40.0) -> Response:
         stream_id = await self.send_request(method, path, body)
-        response = await self.wait_end(stream_id, timeout)
-        if response.reset:
-            raise UpstreamError(f"Muse reset the stream for {path}")
-        if response.status is not None and response.status >= 400:
-            raise UpstreamError(f"{path} returned HTTP {response.status}")
-        return response
+        try:
+            response = await self.wait_end(stream_id, timeout)
+            if response.reset:
+                raise UpstreamError(f"Muse reset the stream for {path}")
+            if response.status is not None and response.status >= 400:
+                raise UpstreamError(f"{path} returned HTTP {response.status}")
+            return response
+        finally:
+            # One-shot responses (pings, acks, fs chunks, invoke replies) must
+            # not accumulate: without this the dict grows forever on a
+            # long-running process. Stream readers (Subscription) use
+            # send_request directly and pop their own entry on close.
+            self.responses.pop(stream_id, None)
 
     # ------------------------------------------------------------ chat
     async def subscribe(self, session_id: str | None = None, *,
@@ -513,17 +524,22 @@ class MuseProtocolClient:
             body["session_id"] = session_id
         self._mark("subscribe_start")
         stream_id = await self.send_request("POST", "/chat/subscribe", body)
-        response = await self.wait_headers(stream_id, 30)
-        if response.status != 200:
-            raise UpstreamError(f"chat.subscribe returned HTTP {response.status}")
-        deadline = time.monotonic() + 30
-        while b"\n" not in response.body:
-            if time.monotonic() > deadline:
-                raise UpstreamTimeout("chat.subscribe did not acknowledge")
-            await self.wait_update(stream_id, max(0.1, deadline - time.monotonic()))
-        ack = json.loads(bytes(response.body).split(b"\n", 1)[0])
-        if not isinstance(ack, dict) or ack.get("status") != "ok":
-            raise UpstreamError("chat.subscribe was not accepted")
+        try:
+            response = await self.wait_headers(stream_id, 30)
+            if response.status != 200:
+                raise UpstreamError(f"chat.subscribe returned HTTP {response.status}")
+            deadline = time.monotonic() + 30
+            while b"\n" not in response.body:
+                if time.monotonic() > deadline:
+                    raise UpstreamTimeout("chat.subscribe did not acknowledge")
+                await self.wait_update(stream_id, max(0.1, deadline - time.monotonic()))
+            ack = json.loads(bytes(response.body).split(b"\n", 1)[0])
+            if not isinstance(ack, dict) or ack.get("status") != "ok":
+                raise UpstreamError("chat.subscribe was not accepted")
+        except BaseException:
+            # The Subscription never exists to pop this entry on close.
+            self.responses.pop(stream_id, None)
+            raise
         self._mark("subscribe")
         return Subscription(self, stream_id, session_id, ack)
 

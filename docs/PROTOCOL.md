@@ -54,6 +54,26 @@ MUSE2API_PROTOCOL_THREAD_TTL=21600
 
 > 上游的账号级记忆仍是共享的。网关通过 `[[SESSION ISOLATION]]` 前导和线程隔离降低串扰，但不能从协议层删除账号记忆。
 
+### 3.1 单账号并发与连接池（0.8.0）
+
+对上游并发能力的逆向实测（真实 muse.ai，单账号、单条 Noise 连接）：
+
+| 场景 | 结果 |
+|---|---|
+| 8 条并行 `chat.stream`（各自独立 session） | 全部成功，墙钟 12.0s，零错误，无事件串扰 |
+| 12 条并行 `chat.stream` | 全部成功，墙钟 14.6s，零错误 |
+| 15 条背靠背顺序请求 | 全部成功，无 429 / 配额限流 |
+| 第二条 Noise 连接（同账号同 Cookie） | 2.2s 建立成功；第一条连接不被踢、订阅不受影响 |
+
+结论：**上游按 VM 并行执行 Agent 轮次，单账号的并发上限远高于网页端一次一轮的用法**。因此 0.8.0 把网关改成并发友好的结构：
+
+- **连接池**：每个账号维护 `MUSE2API_PROTOCOL_CONNECTIONS`（默认 2）条 Noise 连接。新轮次分摊到最空闲的连接；线程固定在创建它的连接上（订阅与命令注册都是连接级的）。`MUSE2API_ACCOUNT_MAX_CONCURRENCY` 默认相应提高到 12。
+- **同会话并行轮次不再互相破坏**：续接判定移到线程锁内（0.7.0 及之前，第二个请求会在第一个请求仍在流式输出时替换线程并关闭其订阅）。同一线程上的并发请求现在排队串行执行，全部成功。
+- **稳定 `node_id`**：连接重连后沿用同一个设备标识，续接轮次与命令注册不会因为设备身份变化而丢失上游上下文。
+- **Cookie 失效显式化**：连接建立时上游合并进来的 Cookie 不再触发其他连接重连（初版连接池在这里出现重连乒乓）；只有管理接口替换账号 Cookie 时才通过 `invalidate_account` 让连接在下次使用时重建。
+- **预热**：`prewarm` 在启动时后台建好第一条连接，首个请求不再支付 3-20 秒握手。
+- **`n>1` 图片并行**：一次生成多张图片时各轮并发执行。
+
 ## 4. 系统提示词
 
 muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条用户消息。0.7.0 起网关用两层机制逼近真正的 system 语义。
@@ -139,6 +159,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 | `MUSE2API_PROTOCOL_WAKE_CONFIRM` | `20` | VM 唤醒后轮询 `/api/session` 的最长秒数 |
 | `MUSE2API_PROTOCOL_THREAD_TTL` | `21600` | 空闲线程保留秒数，0 永久 |
 | `MUSE2API_PROTOCOL_MAX_THREADS` | `64` | 每账号线程上限，超出按 LRU 淘汰 |
+| `MUSE2API_PROTOCOL_CONNECTIONS` | `2` | 每账号并行 Noise 连接数；并发轮次分摊其上，线程固定在自己的连接 |
 | `MUSE2API_TOOL_CHANNEL` | `auto` | `auto`/`native`：原生客户端工具 + Planner 兜底；`planner`：只用扁平 JSON Planner |
 | `MUSE2API_MAX_PROMPT_CHARS` | `18000` | 系统指令与历史的最大长度 |
 | `MUSE2API_TOOL_RETRIES` | `2` | Planner 被拒绝时的重试次数 |
@@ -149,7 +170,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 1. **confidential VM**：只支持标准 `hatch_vm`。如果账号被分配到 confidential VM / delegation notary，驱动会返回明确错误，不会静默回退浏览器。
 2. **上游行为**：muse.ai 仍是 Agent，不是可完全控制的 LLM；它可能拒绝某些请求，或给出与普通 LLM 不同的结果。
 3. **账号级记忆**：会话隔离前导 + 托管规则明确禁用 `muse.memory_search` / `muse.memory_get`（0.7.0 实测有效）；账号的记忆文件本身仍会由上游的后台整理流程读写，网关不会删除或改写 MEMORY.md。
-4. **线程订阅**：每个活跃线程一个长连接订阅；大量并发会话会占用上游订阅资源，默认 64 个/账号，按 LRU 淘汰。
+4. **线程订阅**：每个活跃线程一个长连接订阅；大量并发会话会占用上游订阅资源，默认 64 个/账号，按 LRU 淘汰。有轮次正在执行的线程不会被淘汰。
 5. **系统提示词边界**：`system` 通过"托管规则 + 指令块"双层注入，实测能稳定跟随角色、格式与记忆隔离；但 muse.ai 服务端的静态核心提示词（VM 内 `workspace/system/system_prompt.md`）没有写入口，完全替换模型身份做不到。没有 system 消息时行为与 OpenAI 语义一致（user 文本弱于 system）。
 6. **原生工具的随机性**：Muse 偶尔无视已注册命令直接说"没有这个工具"，或优先用自己的内置工具；混合通道用"真实工具"提示词 + 托管规则 + 拒绝检测 + Planner 重试兜底，上游行为不能 100% 保证。
 7. **命令注册是连接级的**：同账号所有会话共享已注册命令；无关会话的 Muse 若自发调用会被 `not_available` 拒绝并自行解释。
@@ -159,7 +180,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 ## 9. 部署与回滚
 
 ```bash
-docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.7.0 .
+docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.8.0 .
 docker run -d --name muse2api-web \
   --restart unless-stopped \
   -p 18610:18610 \
@@ -170,10 +191,10 @@ docker run -d --name muse2api-web \
   -e MUSE2API_UPSTREAM_PROXY=http://<proxy>:7893 \
   -e MUSE2API_API_KEY=... \
   -e MUSE2API_ADMIN_KEY=... \
-  -e MUSE2API_ACCOUNT_MAX_CONCURRENCY=4 \
+  -e MUSE2API_ACCOUNT_MAX_CONCURRENCY=12 \
   -e MUSE2API_KEEPALIVE_ENABLED=true \
   -e MUSE2API_EMULATE_TOOLS=true \
-  muse2api-web:protocol-0.7.0
+  muse2api-web:protocol-0.8.0
 ```
 
 回滚到浏览器驱动（保留旧容器）：

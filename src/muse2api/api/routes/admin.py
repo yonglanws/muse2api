@@ -100,10 +100,19 @@ async def list_accounts(svc: Services = Depends(get_services)) -> dict:
     return {"data": [a.public() for a in svc.pool.all()]}
 
 
+def _invalidate(svc: Services, account_id: str) -> None:
+    """Tell drivers that an account's cookies were replaced so pooled
+    connections rebuild on their next use (protocol driver only)."""
+    invalidate = getattr(svc.driver, "invalidate_account", None)
+    if invalidate is not None:
+        invalidate(account_id)
+
+
 @router.post("/accounts")
 async def create_account(body: AccountCreate, svc: Services = Depends(get_services)) -> dict:
     acc = _build_account(body)
     await svc.pool.upsert(acc)
+    _invalidate(svc, acc.id)
     return {"account": acc.public(), "missing_cookies": missing_session_cookies(acc.cookies)}
 
 
@@ -119,6 +128,7 @@ async def import_accounts(body: AccountsImportRequest,
             results.append({"index": i, "ok": False, "error": e.message, "code": e.code})
             continue
         await svc.pool.upsert(acc)
+        _invalidate(svc, acc.id)
         results.append({"index": i, "ok": True, "account": acc.public(),
                         "missing_cookies": missing_session_cookies(acc.cookies)})
     return {"data": results}
@@ -137,6 +147,7 @@ async def update_account(account_id: str, body: AccountUpdate,
         # Fresh cookies give an invalid account another chance.
         acc.status = AccountStatus.ACTIVE
         acc.last_error = None
+        _invalidate(svc, account_id)
     if body.cookie_expires is not None:
         acc.cookie_expires = body.cookie_expires
     await svc.pool.upsert(acc)

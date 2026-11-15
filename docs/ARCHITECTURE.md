@@ -59,7 +59,7 @@ flowchart TB
 
 1. `routes/chat.py` 校验请求，`resolve_model` 解析模型别名，`flatten_messages` 把多轮对话合并成一条提示词并提取图片。
 2. 如果请求带 `system` / `developer` 消息，`core/system_prompt.py` 会把它们整理成前置指令块，并生成指令指纹。
-3. `Gateway.chat_stream` 通过 `AccountPool.lease()` 租用一个账号（受调度策略和单账号并发限制约束）。
+3. `Gateway.chat_stream` 通过 `AccountPool.lease()` 租用一个账号（受调度策略和单账号并发限制约束，默认每账号 12 并发）。
 4. 调用 `driver.chat_stream(account, ChatRequest)`，接收文本增量。
 5. 出错时：
    - `UpstreamAuthError`：账号标记为 `invalid`；
@@ -94,7 +94,7 @@ class MuseDriver(ABC):
 - 通过 HTTP 引导 + Noise XX 握手建立到 Hatch 通道的加密 WebSocket，再以 protobuf 承载 `chat.stream` / `chat.subscribe` 等 RPC，详见 [PROTOCOL.md](PROTOCOL.md)。
 - 每个会话对应一个 `session_id`，线程订阅只接收该线程的事件，因此不同用户的上下文在协议层就是隔离的。
 - `delta.text_append` 直接映射为 OpenAI `delta.content`，是真正的逐字流，不依赖 DOM 轮询。
-- 连接按账号复用；空闲线程超过 `MUSE2API_PROTOCOL_THREAD_TTL` 后回收，超过 `MUSE2API_PROTOCOL_MAX_THREADS` 时关闭最旧的空闲线程。
+- 每个账号维护 `MUSE2API_PROTOCOL_CONNECTIONS` 条 Noise 连接（默认 2），并发轮次分摊到最空闲的连接；线程固定在创建它的连接上。空闲线程超过 `MUSE2API_PROTOCOL_THREAD_TTL` 后回收，超过 `MUSE2API_PROTOCOL_MAX_THREADS` 时关闭最旧的空闲线程（有轮次在执行的线程不会被回收）。启动时 `prewarm` 后台建立第一条连接。
 - 工具通道：`register_capabilities` 声明 `ui.navigate.*` 命令，`client.invoke` 事件被重编码为标准 OpenAI `tool_calls`。
 
 ## 浏览器驱动要点

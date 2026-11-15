@@ -4,12 +4,13 @@
 
 muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/completions`、`/v1/images/generations`、`/v1/videos` 这些熟悉的 OpenAI 接口，对内通过原生 Noise 协议连接 muse.ai 的网页 Agent。它不模拟网页点击，也不把提示词简单拼在聊天框里，而是直接使用 muse.ai 自己的会话、线程和客户端工具通道。
 
-这一版是 **0.7.0**。
+这一版是 **0.8.0**。
 
 ## 先说结论
 
 - **一个地址就能接入**：把 `base_url` 指向 `http://<host>:18610/v1`，OpenAI SDK、LobeChat、Cherry Studio 或自研 Agent 都能用。
 - **不需要 Chromium**：推荐 `MUSE2API_DRIVER=protocol`，直接用 Noise + `chat.stream` 通信，镜像约 194 MB。
+- **单账号真高并发**：逆向实测上游按 VM 并行执行轮次（单连接 12 条并发流零错误），网关用连接池 + 预热把这份并发能力完整交给调用方，默认单账号 12 并发。
 - **系统提示词生效**：`system` / `developer` 消息会被整理成独立指令块，再和当前用户消息一起发送。
 - **工具调用真的执行**：OpenAI `tools` 会被注册成 muse.ai 的原生客户端命令，Agent 在自己的工具循环里调用，再还原成标准 `tool_calls`。
 - **多账号、多会话**：账号池负责调度、冷却、故障转移；会话按 API Key 隔离，热线程复用降低首字延迟。
@@ -197,7 +198,8 @@ curl http://localhost:18610/v1/videos \
 | `MUSE2API_UPSTREAM_PROXY` | 空 | 协议连接、续期、VM 唤醒的代理 |
 | `MUSE2API_BROWSER_PROXY` | 空 | 浏览器驱动专用代理 |
 | `MUSE2API_POOL_STRATEGY` | `affinity` | `lru` / `round_robin` / `affinity` |
-| `MUSE2API_ACCOUNT_MAX_CONCURRENCY` | `4` | 每账号并行请求数 |
+| `MUSE2API_ACCOUNT_MAX_CONCURRENCY` | `12` | 每账号并行请求数（上游实测 12 并发无压力） |
+| `MUSE2API_PROTOCOL_CONNECTIONS` | `2` | 每账号并行 Noise 连接数，并发轮次分摊其上 |
 | `MUSE2API_WARM_THREADS` | `2` | 浏览器驱动预热线程数 |
 | `MUSE2API_MAX_FAILOVER` | `2` | 换账号重试次数 |
 | `MUSE2API_ACCOUNT_COOLDOWN` | `120` | 错误后的冷却秒数 |
@@ -219,7 +221,7 @@ curl http://localhost:18610/v1/videos \
 ```bash
 MUSE2API_DRIVER=protocol
 MUSE2API_UPSTREAM_PROXY=http://<proxy>:7893
-MUSE2API_ACCOUNT_MAX_CONCURRENCY=4
+MUSE2API_ACCOUNT_MAX_CONCURRENCY=12
 MUSE2API_KEEPALIVE_ENABLED=true
 MUSE2API_TOOL_CHANNEL=auto
 ```
@@ -265,7 +267,7 @@ docker run -d --name muse2api \
 3. API 会话里的账号级记忆已被托管规则禁用（实测有效），但 muse.ai 上游的后台整理流程仍可能往账号记忆里写笔记；网关不删除、不改写账号的 MEMORY.md。
 4. 没有 `system` 消息、只用普通用户文本描述身份时，直接问"你是谁"仍可能自称 Muse——这与 OpenAI 语义一致（user 弱于 system）。
 5. 历史图片只保留占位符，跨线程依赖完整图片细节时可能丢失。
-6. 多人使用时请增加账号，而不是无限提高单账号并发；一个 muse.ai 账号运行在一台 VM 上。
+6. 单账号并发已按上游实测放开（默认 12，逆向验证单连接 12 条并行流无错误）；要更高并发仍建议增加账号——一个 muse.ai 账号运行在一台 VM 上，并发高时各轮次共享同一台 VM 的算力与配额。
 
 ## 来路
 

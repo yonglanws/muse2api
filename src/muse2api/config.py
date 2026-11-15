@@ -94,6 +94,14 @@ class Settings(BaseSettings):
         default=64,
         description="Threads kept per account; the oldest idle thread is closed beyond this.",
     )
+    protocol_connections: int = Field(
+        default=2,
+        description="Noise WebSocket connections kept per account for parallel turns. "
+        "muse.ai accepts several simultaneous connections (probed 0.8.0: a second "
+        "connection never evicts the first) and runs agent turns in parallel, so a "
+        "small pool spreads concurrent streams without one WebSocket becoming the "
+        "bottleneck. Threads stick to the connection that created them.",
+    )
 
     # --- timeouts (seconds) ---
     chat_timeout: float = 300.0
@@ -140,7 +148,12 @@ class Settings(BaseSettings):
     # --- account pool ---
     pool_strategy: PoolStrategyName = "affinity"
     pool_acquire_timeout: float = 60.0
-    account_max_concurrency: int = 4
+    account_max_concurrency: int = Field(
+        default=12,
+        description="Parallel requests allowed per account. muse.ai runs agent turns "
+        "in parallel on the account VM (12 concurrent streams probed clean on a "
+        "single connection), so this caps the gateway, not the upstream.",
+    )
     account_cooldown: float = 120.0
     max_failover: int = 2
 

@@ -135,6 +135,9 @@ class AccountPool:
         self._accounts: dict[str, Account] = {}
         self._inflight: dict[str, int] = defaultdict(int)
         self._cond = asyncio.Condition()
+        self._dirty = False
+        self._persist_task: asyncio.Task | None = None
+        self._last_stamp = 0.0
 
     # ---- lifecycle / CRUD ----
     async def load(self) -> None:
@@ -223,7 +226,14 @@ class AccountPool:
                 if free:
                     acc = self.strategy.choose(free, hint)
                     self._inflight[acc.id] += 1
-                    acc.last_used_at = time.time()
+                    # Strictly increasing stamps keep LRU ties impossible even
+                    # when acquires land in the same clock tick (a coarse
+                    # clock would otherwise pin every choice to one account).
+                    stamp = time.time()
+                    if stamp <= self._last_stamp:
+                        stamp = self._last_stamp + 1e-6
+                    self._last_stamp = stamp
+                    acc.last_used_at = stamp
                     return acc
                 remaining = deadline - time.monotonic()
                 back_in = None if back_at is None else back_at - time.time()
@@ -245,7 +255,29 @@ class AccountPool:
             self._inflight[account.id] = max(0, self._inflight[account.id] - 1)
             self._apply_result(account, error)
             self._cond.notify_all()
-        await self.persist()
+        self.schedule_persist()
+
+    def schedule_persist(self, delay: float = 2.0) -> None:
+        """Coalesce the per-request bookkeeping writes: a save runs at most
+        every ``delay`` seconds, and only if something actually changed.
+        ``upsert``/``remove`` still persist immediately (admin actions)."""
+        self._dirty = True
+        if self._persist_task is not None and not self._persist_task.done():
+            return
+        self._persist_task = asyncio.get_running_loop().create_task(
+            self._delayed_persist(delay))
+
+    async def _delayed_persist(self, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            if not self._dirty:
+                return
+            self._dirty = False
+            await self.persist()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - bookkeeping must never break requests
+            log.exception("delayed accounts.json persist failed")
 
     def _apply_result(self, acc: Account, error: BaseException | None) -> None:
         if error is None:
