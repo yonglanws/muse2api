@@ -1,58 +1,42 @@
-# muse2api Cookie Import — Chrome Extension
+# muse2api Cookie 导入插件
 
-A Manifest V3 Chrome extension that reads muse.ai login cookies (including
-httpOnly ones) from your browser and posts them to your muse2api gateway in one
-click.
+一个 Manifest V3 Chrome / Edge 插件：读取浏览器里 muse.ai 的登录 Cookie（包括 httpOnly 的），一键导入到你的 muse2api 网关。
 
-## Why this is needed
+## 为什么需要它
 
-The core muse.ai cookies (`hatch_sess`, `hatch_native_auth_device`, plus
-`hatch_gw` / `hatch_vml` when muse.ai sets them) are all `httpOnly`, which means regular web-page
-JavaScript cannot read them. Only a browser extension with the `cookies`
-permission can access them.
+muse.ai 的核心 Cookie（`hatch_sess`、`hatch_native_auth_device`，以及存在时的 `hatch_gw` / `hatch_vml`）都是 `httpOnly`，普通网页 JavaScript 读不到，只有带 `cookies` 权限的浏览器插件才能访问。
 
-## Install (unpacked / developer mode)
+## 安装（开发者模式）
 
-1. Download `muse2api-cookie-extension.zip` from the muse2api dashboard
-   (Accounts page → **Download extension** button) and unzip it.
-2. Open `chrome://extensions` in Chrome.
-3. Enable **Developer mode** (top-right toggle).
-4. Click **Load unpacked** and select the unzipped folder.
-5. The extension icon appears in the toolbar.
+1. 在 muse2api 控制台的「账号池」页点击 **下载插件**，得到 `muse2api-cookie-extension.zip`，解压。
+2. 打开 `chrome://extensions`。
+3. 打开右上角的 **开发者模式**。
+4. 点击 **加载已解压的扩展程序**，选择解压后的目录。
+5. 工具栏出现插件图标即安装完成。
 
-## Usage
+## 使用
 
-1. Log in to [https://muse.ai/](https://muse.ai/) in this browser until you can
-   see the chat interface.
-2. Click the extension icon in the toolbar.
-3. Fill in:
-   - **Gateway URL**: the base URL of your muse2api instance, e.g.
-     `http://your-server:18610`. You can copy it from the address bar when you
-     have the dashboard open.
-   - **Admin Key**: the bearer token for `/admin/*` — `MUSE2API_ADMIN_KEY`, or the
-     generated API key (`m2a-…`, stored in `data/api_key`) when that is unset.
-   - **Account label** (optional): a name for the account.
-4. Click **Read and import**.
+1. 在**这个浏览器**里登录 [muse.ai](https://muse.ai/)，直到能看到聊天界面。
+2. 点击工具栏上的插件图标。
+3. 填写：
+   - **网关地址**：muse2api 的地址，例如 `http://your-server:18610`；
+   - **Admin Key**：`/admin/*` 的密钥，即 `MUSE2API_ADMIN_KEY`；未设置时使用自动生成的 API Key（`m2a-…`，保存在 `data/api_key`）；
+   - **账号标签**（可选）：给这个账号起个名字。
+4. 点击 **读取并导入**。
 
-The extension reads the muse.ai cookies from your browser and posts them to
-`POST {gateway}/admin/accounts`. The response shows the new account ID and
-expiry.
+插件会读取 muse.ai 的 Cookie 并 POST 到 `{网关地址}/admin/accounts`，返回结果里会显示新的账号 ID 和过期时间。
 
-## Permissions
+## 权限说明
 
-- `cookies` — read muse.ai cookies.
-- `storage` — persist the gateway URL and key between sessions (never the
-  cookies themselves).
-- `https://muse.ai/*`, `https://*.muse.ai/*` — read cookies for this domain.
-- Optional: your gateway URL (requested at save time so the extension can POST
-  to it). Only the specific origin you configure is requested.
+- `cookies`：读取 muse.ai 的 Cookie；
+- `storage`：保存网关地址和密钥，**不保存 Cookie**；
+- `https://muse.ai/*`、`https://*.muse.ai/*`：读取该域名的 Cookie；
+- 可选权限：你填写的网关地址（保存设置时申请，只申请这一个源）。
 
-## Cookie lifetime
+## Cookie 有效期
 
-When present, the shortest-lived core cookie is `hatch_vml` (roughly 2 days);
-otherwise `hatch_sess` (roughly 30 days).
-Re-import (one click) when the Accounts page shows an expiry warning.
+存在时，最短命的核心 Cookie 是 `hatch_vml`（约 2 天）；否则是 `hatch_sess`（约 30 天）。控制台账号卡片出现过期提醒时，重新导入一次即可。
 
-## Languages
+## 语言
 
-The popup is available in English, Tiếng Việt, and 中文. Select in the popup.
+插件弹窗支持中文、English、Tiếng Việt，可在弹窗右上角切换；默认跟随浏览器语言。

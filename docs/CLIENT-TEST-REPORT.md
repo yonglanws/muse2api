@@ -1,14 +1,14 @@
-# AstrBot 适配测试报告
+# 客户端兼容性与生产验证报告
 
 - 日期：2026-11-16（0.5.2 更新）
-- 版本：muse2api 0.5.2（原生协议驱动 + 原生客户端工具通道 + 原生 system 提示词栈 + AstrBot 适配层）
-- 本地环境：Windows，AstrBot Desktop 4.29.4（`D:\AstrBot`），Python 3.12
+- 版本：muse2api 0.5.2（原生协议驱动 + 原生客户端工具通道 + 原生 system 提示词栈 + 通用客户端兼容层）
+- 本地环境：Windows，AstrBot Desktop 4.29.4（作为真实 Agent 客户端），Python 3.12
 - 服务器环境：192.168.31.54，Docker，`muse2api-web:protocol-0.5.2`（原浏览器镜像 `muse2api-web:astrbot-0.4.1` 保留回滚）
 - 账号：Muse 账号「慵懒午睡」（唯一账号）
 - 上游：muse.ai（Meta 的个人 AI Agent，不是普通 LLM）
 
 > 测试容器与生产容器使用同一个 Muse 账号。测试完成后测试容器已删除；生产容器保留运行。
-> 本地 AstrBot 测试使用 AstrBot 自带的 Provider 代码（`ProviderOpenAIOfficial`）和服务器数据库副本中的真实 Persona，不涉及生产 AstrBot。
+> 本地客户端测试使用 AstrBot 自带的 Provider 代码（`ProviderOpenAIOfficial`）和服务器数据库副本中的真实 Persona，不涉及生产 AstrBot。
 
 ## 1. 结论
 
@@ -17,10 +17,10 @@
 | 系统提示词 / 角色支持 | ✅ 通过 | 0.5.2 起**原生 system 栈已破解**：四个 VM 指令文件（IDENTITY/SOUL/USER/AGENTS.md）+ Persona bridge 双层生效 |
 | 用户之间上下文不串 | ✅ 通过 | 并发两个会话各自保存/取回不同暗号，没有串扰；`USER.md` 原生层中和昵称外泄 |
 | Agent / 工具调用 | ✅ 通过 | 原生客户端命令 → 标准 OpenAI `tool_calls`；工具结果续接、流式工具调用均验证 |
-| AstrBot（QQ）亲和性 | ✅ 通过 | `x-astrbot-conversation-id`、昵称替换、热线程复用、Persona、工具循环、SSE 均验证 |
+| Agent 客户端亲和性（以 AstrBot 为例） | ✅ 通过 | `x-astrbot-conversation-id`、昵称替换、热线程复用、Persona、工具循环、SSE 均验证 |
 | 会话续期（keepalive） | ✅ 通过 | 修复 `httpx` 不走代理导致的 ConnectError；`/admin/accounts/{id}/renew` 返回 VM `RUNNING` |
 | 回归测试 | ✅ 通过 | `pytest` 229 passed；`ruff check src tests` 通过 |
-| 普通 OpenAI 客户端 | ✅ 通过 | 不带 AstrBot 头的非流式/流式请求行为不变；带 system 消息时自动走 Persona bridge |
+| 普通 OpenAI 客户端 | ✅ 通过 | 不带兼容层会话头的非流式/流式请求行为不变；带 system 消息时自动走 Persona bridge |
 | 纯协议驱动（Noise） | ✅ 通过 | 逐字流、线程隔离/续接、图片/视频、工具调用均实测 |
 
 ## 1.1 0.5.2 新增验证（2026-11-16）：原生 system 提示词栈
@@ -218,9 +218,9 @@ generic stream     13.5s: 晚安，小红，好梦。
 1. muse.ai 的身份和安全策略是模型行为，无法 100% 覆盖。它仍可能：
    - 拒绝扮演年龄较小的虚构角色；
    - 拒绝把「暗号」写入长期记忆；
-   - 用「我不会真的冒充她」开头。适配层会清洗/重试，但极端情况下只能返回安全兜底。
+   - 用「我不会真的冒充她」开头。兼容层会清洗/重试，但极端情况下只能返回安全兜底。
 2. 工具 Planner 是概率性的。默认 2 次重试后若仍失败，AstrBot 收到的是普通文本而不是 `tool_calls`。
-3. 账号主人自己的记忆（例如「名字是小红」）仍在 Muse 账号级；适配层只替换昵称，不清除记忆。
+3. 账号主人自己的记忆（例如「名字是小红」）仍在 Muse 账号级；0.5.2 起原生 `USER.md` 网关段从源头中和昵称外泄，兼容层再做替换，但不清除账号记忆本身。
 4. 历史图片只保留占位符，不重复上传；跨线程依赖完整历史时，图片细节可能丢失。
 5. 非 AstrBot 客户端不做昵称替换/免责声明清洗，仍可能出现账号主人的称呼。
 
@@ -235,8 +235,8 @@ generic stream     13.5s: 晚安，小红，好梦。
 - `src/muse2api/drivers/browser/driver.py`：热线程续接、Persona 指纹、LRU tab、page_echo。
 - `src/muse2api/upstream/muse.py` / `drivers/http/driver.py`：上游代理。
 - `src/muse2api/config.py`：AstrBot / 工具 / 代理 / 协议线程配置。
-- `tests/test_astrbot_compat.py`（新增）：30 个 AstrBot 适配测试。
-- `docs/ASTRBOT.md`（新增）：接入与配置说明。
+- `tests/test_astrbot_compat.py`（新增）：30 个客户端兼容层测试。
+- `docs/CLIENTS.md`（新增）：客户端接入与配置说明。
 
 ## 6. 部署状态
 
@@ -246,4 +246,4 @@ generic stream     13.5s: 晚安，小红，好梦。
 | `muse2api-web-0.4.1` | 原 `muse2api-web:astrbot-0.4.1` | 已停止，保留回滚 |
 | `muse2api-astrbot-test` | `muse2api-web:astrbot-test` | 已停止，隔离数据目录保留 |
 
-回滚命令见 `docs/ASTRBOT.md` 第 7 节。
+回滚命令见 `docs/CLIENTS.md` 第 7 节。
