@@ -123,8 +123,8 @@ class ProtocolDriver(MuseDriver):
         return (self.settings.upstream_proxy or self.settings.browser_proxy or None)
 
     async def _client(self, account: Account, state: _AccountState) -> MuseProtocolClient:
-        fingerprint = _cookie_fingerprint(account.cookies)
         async with state.connect_lock:
+            fingerprint = _cookie_fingerprint(account.cookies)
             client = state.client
             if client is not None and client.alive and state.cookie_fp == fingerprint:
                 return client
