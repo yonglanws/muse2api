@@ -179,7 +179,7 @@ docker compose up -d --build
 
 ### 接入 AstrBot / QQ
 
-0.5.1 内置原生协议 driver 和 AstrBot 适配：把 Persona 放进当前用户轮、用 `x-astrbot-conversation-id` 做会话隔离和线程复用、把工具注册为 Muse 原生客户端命令（`client.register_capabilities` → `client.invoke`）并输出标准 OpenAI `tool_calls`，同时清洗 muse.ai 的出戏免责声明。账号级长期记忆通过会话隔离前导与线程隔离禁止读取。普通 OpenAI 客户端只要带 `system` 消息，也会自动走同一套 Persona bridge。AstrBot 的 Provider 填 `http://<host>:18610/v1`、模型 `gpt-4o`（或 `muse-chat`）即可。完整配置、行为说明和限制见 [docs/ASTRBOT.md](docs/ASTRBOT.md)、[docs/PROTOCOL.md](docs/PROTOCOL.md)，测试记录见 [docs/ASTRBOT-TEST-REPORT.md](docs/ASTRBOT-TEST-REPORT.md)。
+0.5.2 内置原生协议 driver 和 AstrBot 适配，并破解了 muse.ai 的原生 system 提示词栈（每次会话开头被 harness 读取的 IDENTITY/SOUL/USER/AGENTS.md 四个指令文件，维护成“变色龙”基线：账号身份服从会话角色、账号主人昵称不再外泄、MEMORY.md 永不写入）：把 Persona 放进当前用户轮、用 `x-astrbot-conversation-id` 做会话隔离和线程复用、把工具注册为 Muse 原生客户端命令（`client.register_capabilities` → `client.invoke`）并输出标准 OpenAI `tool_calls`，同时清洗 muse.ai 的出戏免责声明。账号级长期记忆通过会话隔离前导与线程隔离禁止读取。普通 OpenAI 客户端只要带 `system` 消息，也会自动走同一套 Persona bridge。AstrBot 的 Provider 填 `http://<host>:18610/v1`、模型 `gpt-4o`（或 `muse-chat`）即可。完整配置、行为说明和限制见 [docs/ASTRBOT.md](docs/ASTRBOT.md)、[docs/PROTOCOL.md](docs/PROTOCOL.md)，测试记录见 [docs/ASTRBOT-TEST-REPORT.md](docs/ASTRBOT-TEST-REPORT.md)。
 
 如果 muse.ai 只能通过代理访问，除了 `MUSE2API_BROWSER_PROXY`，还要设置 `MUSE2API_UPSTREAM_PROXY`（会话续期/VM 唤醒的 Python HTTP 调用也走代理）。
 

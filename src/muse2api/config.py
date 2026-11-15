@@ -149,6 +149,19 @@ class Settings(BaseSettings):
         "commands (client.register_capabilities) so muse.ai calls them through its "
         "own client.invoke loop; 'planner' uses only the flat JSON planner prompt.",
     )
+    native_profile: Literal["off", "chameleon"] = Field(
+        default="off",
+        description="Maintain muse.ai's native instruction files (IDENTITY.md, "
+        "SOUL.md, USER.md, AGENTS.md — read at the start of every conversation) "
+        "in a 'chameleon' shape: account identity defers to each conversation's "
+        "persona and never calls users by the account owner's nickname. "
+        "MEMORY.md is never written. 'off' leaves the files untouched.",
+    )
+    native_profile_dir: str = Field(
+        default="",
+        description="Optional directory whose identity.md / soul.md / user.md / "
+        "agents.md override the built-in chameleon content wholesale.",
+    )
     astrbot_tool_retries: int = Field(
         default=2,
         description="Retries when muse.ai refuses an emulated tool call instead of "

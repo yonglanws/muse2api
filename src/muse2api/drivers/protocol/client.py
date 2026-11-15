@@ -610,6 +610,36 @@ class MuseProtocolClient:
             body["error"] = error
         await self.request("POST", "/client/invoke-result", body, 15)
 
+    # ------------------------------------------------------------ vm files
+    async def read_text_file(self, path: str) -> str | None:
+        """Read a small text file from the VM (``None`` when missing/unreadable)."""
+        try:
+            response = await self.request("POST", "/fs/read", {
+                "path": path, "offset": 0, "len": 262144,
+            }, 30)
+        except Exception:  # noqa: BLE001 - best-effort read
+            return None
+        if response.status != 200:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        result = body.get("result", body) if isinstance(body, dict) else {}
+        if not isinstance(result, dict) or "data_base64" not in result:
+            return None
+        return base64.b64decode(result["data_base64"]).decode("utf-8", "replace")
+
+    async def write_text_file(self, path: str, text: str) -> None:
+        """Overwrite a small text file in the VM root."""
+        response = await self.request("POST", "/fs/write", {
+            "path": path,
+            "data_base64": base64.b64encode(text.encode("utf-8")).decode(),
+            "overwrite": True, "append": False, "create_parent": True,
+        }, 30)
+        if response.status != 200:
+            raise UpstreamError(f"fs.write({path}) returned HTTP {response.status}")
+
     # ------------------------------------------------------------ files
     async def download_bytes(self, resource: dict[str, Any]) -> bytes:
         path = str(resource.get("path") or "")

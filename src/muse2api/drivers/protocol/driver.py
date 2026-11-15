@@ -18,6 +18,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ...accounts.model import Account
@@ -37,6 +38,14 @@ from ..base import (
 )
 from .client import MuseProtocolClient, Subscription
 from .media import _media_candidates, resource_kind, resource_mime
+from .profile import (
+    MANAGED_MARKER,
+    PROFILE_FILES,
+    apply_native_profile,
+    desired_files,
+    profile_fingerprint,
+    reset_native_profile,
+)
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +141,8 @@ class _AccountState:
     registered_tools: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_users: int = 0
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Native profile (IDENTITY/SOUL/USER/AGENTS.md) fingerprint last applied.
+    profile_fp: str = ""
 
 
 @dataclass
@@ -214,7 +225,66 @@ class ProtocolDriver(MuseDriver):
             account.cookies.update(client.cookies)
             state.cookie_fp = _cookie_fingerprint(account.cookies)
             log.info("protocol connected for account %s", account.id)
+            await self._apply_native_profile(account.id, state, client)
             return client
+
+    async def _apply_native_profile(self, account_id: str, state: _AccountState,
+                                    client: MuseProtocolClient) -> None:
+        """Keep the account's native instruction files in the managed shape.
+
+        muse.ai reads IDENTITY/SOUL/USER/AGENTS.md at the start of every
+        conversation; the chameleon profile makes the account identity defer to
+        each conversation's persona. Never fatal: the persona bridge works
+        without it. MEMORY.md is never written by this path.
+        """
+        if self.settings.native_profile == "off":
+            return
+        profile_dir = (Path(self.settings.native_profile_dir)
+                       if self.settings.native_profile_dir else None)
+        desired = desired_files(profile_dir)
+        fingerprint = profile_fingerprint(desired)
+        if state.profile_fp == fingerprint:
+            return
+        try:
+            summary = await apply_native_profile(
+                client,
+                account_id=account_id,
+                data_dir=Path(self.settings.data_dir),
+                profile_dir=profile_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 - profile is best-effort
+            log.warning("native profile apply failed for %s: %s", account_id, exc)
+            return
+        state.profile_fp = fingerprint
+        if any(status == "written" for status in summary.values()):
+            log.info("native profile applied for %s: %s", account_id, summary)
+
+    # ------------------------------------------------------------ admin api
+    async def native_profile_status(self, account_id: str) -> dict[str, Any]:
+        state = self._accounts.get(account_id)
+        client = state.client if state else None
+        if client is None or not client.alive:
+            return {"account_id": account_id, "connected": False}
+        current: dict[str, str | None] = {}
+        for name in PROFILE_FILES:
+            text = await client.read_text_file(name)
+            current[name] = (MANAGED_MARKER in text) if text else None
+        return {
+            "account_id": account_id,
+            "connected": True,
+            "mode": self.settings.native_profile,
+            "managed_files": current,
+        }
+
+    async def native_profile_reset(self, account_id: str) -> dict[str, Any]:
+        state = self._accounts.get(account_id)
+        client = state.client if state else None
+        if client is None:
+            raise UpstreamError(f"account {account_id} has no protocol connection")
+        summary = await reset_native_profile(
+            client, account_id=account_id, data_dir=Path(self.settings.data_dir))
+        state.profile_fp = ""
+        return summary
 
     # ------------------------------------------------------------ threads
     def _new_thread(self) -> _Thread:

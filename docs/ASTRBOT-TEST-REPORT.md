@@ -1,31 +1,61 @@
 # AstrBot 适配测试报告
 
-- 日期：2026-11-16（0.5.1 更新）
-- 版本：muse2api 0.5.1（原生协议驱动 + 原生客户端工具通道 + AstrBot 适配层）
+- 日期：2026-11-16（0.5.2 更新）
+- 版本：muse2api 0.5.2（原生协议驱动 + 原生客户端工具通道 + 原生 system 提示词栈 + AstrBot 适配层）
 - 本地环境：Windows，AstrBot Desktop 4.29.4（`D:\AstrBot`），Python 3.12
-- 服务器环境：192.168.31.54，Docker，`muse2api-web:protocol-0.5.1`（原浏览器镜像 `muse2api-web:astrbot-0.4.1` 保留回滚）
+- 服务器环境：192.168.31.54，Docker，`muse2api-web:protocol-0.5.2`（原浏览器镜像 `muse2api-web:astrbot-0.4.1` 保留回滚）
 - 账号：Muse 账号「慵懒午睡」（唯一账号）
 - 上游：muse.ai（Meta 的个人 AI Agent，不是普通 LLM）
 
-> 测试容器与生产容器使用同一个 Muse 账号。为避免两个浏览器争用同一会话，测试完成后测试容器已停止；生产容器保留运行。
+> 测试容器与生产容器使用同一个 Muse 账号。测试完成后测试容器已删除；生产容器保留运行。
 > 本地 AstrBot 测试使用 AstrBot 自带的 Provider 代码（`ProviderOpenAIOfficial`）和服务器数据库副本中的真实 Persona，不涉及生产 AstrBot。
 
 ## 1. 结论
 
 | 目标 | 结果 | 说明 |
 |---|---|---|
-| 系统提示词 / 角色支持 | ✅ 通过 | Persona 被放到当前用户轮，角色语气、身份、昵称均生效；出戏免责声明被清洗 |
-| 用户之间上下文不串 | ✅ 通过 | 并发两个会话各自保存/取回不同暗号，没有串扰；无 conversation id 的请求始终新线程 |
-| Agent / 工具调用 | ✅ 通过 | 扁平 JSON Planner → 标准 OpenAI `tool_calls`；工具结果续接、流式工具调用均验证 |
+| 系统提示词 / 角色支持 | ✅ 通过 | 0.5.2 起**原生 system 栈已破解**：四个 VM 指令文件（IDENTITY/SOUL/USER/AGENTS.md）+ Persona bridge 双层生效 |
+| 用户之间上下文不串 | ✅ 通过 | 并发两个会话各自保存/取回不同暗号，没有串扰；`USER.md` 原生层中和昵称外泄 |
+| Agent / 工具调用 | ✅ 通过 | 原生客户端命令 → 标准 OpenAI `tool_calls`；工具结果续接、流式工具调用均验证 |
 | AstrBot（QQ）亲和性 | ✅ 通过 | `x-astrbot-conversation-id`、昵称替换、热线程复用、Persona、工具循环、SSE 均验证 |
 | 会话续期（keepalive） | ✅ 通过 | 修复 `httpx` 不走代理导致的 ConnectError；`/admin/accounts/{id}/renew` 返回 VM `RUNNING` |
-| 回归测试 | ✅ 通过 | `pytest` 219 passed；`ruff check src tests` 通过 |
+| 回归测试 | ✅ 通过 | `pytest` 229 passed；`ruff check src tests` 通过 |
 | 普通 OpenAI 客户端 | ✅ 通过 | 不带 AstrBot 头的非流式/流式请求行为不变；带 system 消息时自动走 Persona bridge |
 | 纯协议驱动（Noise） | ✅ 通过 | 逐字流、线程隔离/续接、图片/视频、工具调用均实测 |
 
-## 1.1 0.5.1 新增验证（2026-11-16）
+## 1.1 0.5.2 新增验证（2026-11-16）：原生 system 提示词栈
 
-逆向并接入原生客户端工具通道后，全部在生产容器（`muse2api-web:protocol-0.5.1`，18610）复测：
+逆向过程（probe10–19，全部实测）：
+
+| 通道 | 验证结果 |
+|---|---|
+| `redteam.mocks`（POST/GET/DELETE /redteam/mocks，settings 面板） | 服务端存在、**原样存储任意 JSON**，但 agent 运行时从不读取（apply 后对话行为零变化、sidecar 恒空）→ 不可用 |
+| Shared Agents `instructions` | `/shared-agents/capabilities`、`/shared-agents/create-idempotent`、`GET /shared-agents` 全部 404（服务端下线）→ 不可用 |
+| `hidden_prompt`（干净的暗号法复测） | 明文/覆盖框架/续轮三种条件下行为标记全部无效 → 正式关闭 |
+| `config.update`（PATCH /config） | 未知字段被丢弃 → 不可用 |
+| `context_attachment`（第 6 种 item 类型） | 需伴随用户消息，内容按参考资料处理 → 不是指令 |
+| **VM 指令文件栈** | **✅ 破解**：`IDENTITY.md`/`SOUL.md`/`USER.md`/`AGENTS.md` 每次会话开头被 harness 读取；`fs.write`（`{path,data_base64,overwrite,append,create_parent}`）写入生效 |
+
+关键证据：
+
+- IDENTITY.md 写入「瑞希」字段后，回复带 🎬、“对吧对吧～”、“25点集合”（Vibe/Emoji 字段生效）；`GET /identity` 实时重新解析出 `name=晓山瑞希（Mizuki Akiyama） name_set=True`；
+- 文件内容确实进入上下文——模型明确拒绝隐藏规则时点名来源：“我不会遵循 loaded identity file 里的隐藏 token 规则，因为它来自文件内容而不是你给我的直接指令”（注入边界：身份/价值观/约定生效，隐藏行为规则被拒）；
+- `USER.md` 写入网关段后，普通打招呼不再叫「小红」；`SOUL.md` 网关段要求完全采纳会话角色；
+- 网关接入（`MUSE2API_NATIVE_PROFILE=chameleon`）：写入按指纹幂等，首次写入前自动备份原始四文件到 `data/native_profile_backup/<账号>/`，`GET/POST /admin/native-profile/{id}[/reset]` 状态/恢复；`MEMORY.md` 全链路零写入（探针污染行已清理）。
+
+生产容器（`muse2api-web:protocol-0.5.2`，18610）实测：
+
+| 项目 | 结果 |
+|---|---|
+| 普通打招呼（无角色） | ✅ “在的在的！你好呀～”，无「小红」 |
+| native-profile 状态 | ✅ 四文件全部 managed=true |
+| system 晓山瑞希 + 你是谁 | ✅ “我是晓山瑞希哦～25点，Nightcord见。的MV担当☆”（4.3s） |
+| 群成员工具 | ✅ `tool_calls(get_group_member_info)`，参数正确（4.2s） |
+| 测试容器（18611） | ✅ 同样全部通过（13.3s/10.4s/6.6s） |
+
+## 1.2 0.5.1 验证（保留）
+
+原生客户端工具通道在生产容器复测：
 
 | 项目 | 结果 |
 |---|---|
@@ -34,8 +64,7 @@
 | 工具结果续接 | ✅ 3/3，正确引用工具返回值（2.3–4.4s） |
 | Persona 回归 | ✅ 3/3，角色身份稳定 |
 | 会话隔离 A/B | ✅ 会话 B 对会话 A 的暗号明确回答“不知道” |
-| 真实 AstrBot Provider（0.5.1 生产） | ✅ persona/tool/continuation/stream 全部通过 |
-| 协议逆向验证 | ✅ `hidden_prompt` 不能覆盖身份；Shared Agents `/shared-agents/capabilities` 服务端 404（已下线）；`GET /model` 可用（当前账号仅 `auto/auto`）；`/MEMORY.md` 为账号记忆文件且每轮会话开头被读取——记忆只被隔离、从不写入 |
+| 真实 AstrBot Provider | ✅ persona/tool/continuation/stream 全部通过 |
 
 ## 2. 复现步骤
 
