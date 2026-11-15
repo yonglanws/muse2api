@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
 from .accounts import AccountStatus
@@ -96,6 +97,17 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
             status_code=400,
         )
 
+    @app.exception_handler(Exception)
+    async def _unhandled_error(_: Request, exc: Exception) -> JSONResponse:
+        # FastAPI's default body is {"detail": ...}; OpenAI clients expect the
+        # error envelope on every failure path.
+        log.exception("unhandled error")
+        return JSONResponse(
+            {"error": {"message": "internal error", "type": "server_error",
+                       "code": "internal_error"}},
+            status_code=500,
+        )
+
     app.include_router(build_router())
     app.add_middleware(RequestLogMiddleware, request_log=services.requests)
     # The cookie-import extension calls /admin/accounts from chrome-extension://.
@@ -105,4 +117,43 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Browser-hosted OpenAI clients (Open WebUI, LobeChat web, LibreChat) call
+    # /v1/* cross-origin; api.openai.com answers with Allow-Origin: *, so the
+    # API surface matches. Admin routes keep the extension-only policy above.
+    app.add_middleware(
+        PathScopedCORSMiddleware,
+        prefixes=("/v1/",),
+        origins=_parse_cors_origins(settings.cors_origins),
+    )
     return app
+
+
+def _parse_cors_origins(raw: str) -> list[str]:
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or ["*"]
+
+
+class PathScopedCORSMiddleware:
+    """Apply CORSMiddleware only under the given path prefixes.
+
+    One instance of the stock CORSMiddleware is built per configured prefix
+    group; requests outside the prefixes pass through untouched (the outer
+    chrome-extension middleware still applies to them).
+    """
+
+    def __init__(self, app: ASGIApp, prefixes: tuple[str, ...], origins: list[str]) -> None:
+        self.prefixes = prefixes
+        self._inner = app
+        self._cors = CORSMiddleware(
+            app,
+            allow_origins=origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        if self.prefixes and path.startswith(self.prefixes):
+            await self._cors(scope, receive, send)
+            return
+        await self._inner(scope, receive, send)

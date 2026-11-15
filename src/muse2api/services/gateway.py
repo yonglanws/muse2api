@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import TypeVar
 
 from ..accounts.model import Account
@@ -48,8 +48,9 @@ class Gateway:
         for attempt in range(self.max_failover + 1):
             async with self._lease(tried, req.conversation_hint) as lease:
                 emitted = False
+                driver_gen = self.driver.chat_stream(lease.account, req)
                 try:
-                    async for delta in self.driver.chat_stream(lease.account, req):
+                    async for delta in driver_gen:
                         emitted = True
                         yield delta
                     return
@@ -60,6 +61,12 @@ class Gateway:
                     if emitted or not self._should_retry(exc, attempt, tried):
                         raise
                     log.warning("chat failed on %s (%s), failing over", lease.account.id, exc)
+                finally:
+                    # Close the driver generator now, not at GC time: its
+                    # cleanup stops the upstream turn when the client went
+                    # away mid-stream.
+                    with suppress(Exception):
+                        await driver_gen.aclose()
 
     async def _run(self, fn: Callable[[Account], Awaitable[T]], hint: str | None = None,
                    kind: str | None = None) -> T:

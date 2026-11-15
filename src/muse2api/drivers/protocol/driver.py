@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import mimetypes
@@ -503,6 +504,12 @@ class ProtocolDriver(MuseDriver):
                     thread.last_seq = 0
                     thread.image_count = 0
                 sub: Subscription | None = thread.subscription
+                if sub is not None and sub.closed:
+                    # Upstream (or a transport drop) ended the subscription
+                    # stream between turns; reopen it from the thread's seq.
+                    sub.close()
+                    sub = None
+                    thread.subscription = None
                 cursor = len(sub.events) if sub is not None else 0
                 # The stable per-connection node id is what the registration's
                 # linked_nodes binds to; invokes only route when they match.
@@ -511,10 +518,13 @@ class ProtocolDriver(MuseDriver):
                 tool_commands: dict[str, str] = {}
                 if native_channel:
                     tool_commands = await self._acquire_tools(conn, req.tools)
+                turn_started = False
+                completed = False
                 try:
                     items = await self._items(client, prompt, images)
                     ack = await client.chat_stream(
                         thread.session_id, items, node_id=node_id)
+                    turn_started = True
                     session_id = str(ack.get("session_id") or thread.session_id)
                     if session_id != thread.session_id:
                         thread.session_id = session_id
@@ -551,12 +561,14 @@ class ProtocolDriver(MuseDriver):
                                          ensure_ascii=False)
                     elif buffered:
                         yield "".join(buffered)
-                    thread.turns = list(req.turns)
-                    thread.system_fp = req.system_fingerprint
-                    thread.image_count = (len(req.images) if req.images_current_only
-                                          else thread.image_count + len(images))
-                    thread.last_seq = max(thread.last_seq, outcome.last_seq)
-                    thread.last_used = time.time()
+                    completed = outcome.done is not None
+                    if completed:
+                        thread.turns = list(req.turns)
+                        thread.system_fp = req.system_fingerprint
+                        thread.image_count = (len(req.images) if req.images_current_only
+                                              else thread.image_count + len(images))
+                        thread.last_seq = max(thread.last_seq, outcome.last_seq)
+                        thread.last_used = time.time()
                 except asyncio.CancelledError:
                     raise
                 except UpstreamError:
@@ -565,6 +577,21 @@ class ProtocolDriver(MuseDriver):
                     raise UpstreamError(
                         f"protocol chat failed ({type(exc).__name__})") from None
                 finally:
+                    if turn_started and not completed:
+                        # The turn is not finished upstream: the client went
+                        # away, the gateway failed over, or the turn timed out.
+                        # Stop the orphan turn (probe 16: /chat/cancel works and
+                        # ends the turn with status "interrupted") and drop the
+                        # thread — replaying its events would leak the aborted
+                        # turn into the next one.
+                        log.info("turn aborted before completion (account=%s);"
+                                 " cancelling upstream session %s",
+                                 account.id, thread.session_id)
+                        with contextlib.suppress(BaseException):
+                            await asyncio.wait_for(
+                                client.cancel(thread.session_id), 5)
+                        if not ephemeral:
+                            await self._discard_thread(state, thread)
                     if ephemeral:
                         if thread.subscription is not None:
                             thread.subscription.close()
@@ -574,6 +601,17 @@ class ProtocolDriver(MuseDriver):
                 self._release_conn(conn_used)
             if native_channel and conn_used is not None:
                 await self._release_tools(conn_used)
+
+    async def _discard_thread(self, state: _AccountState, thread: _Thread) -> None:
+        """Forget a thread whose upstream session is in an unknown state."""
+        async with state.threads_lock:
+            for key, value in list(state.threads.items()):
+                if value is thread:
+                    state.threads.pop(key, None)
+                    break
+        if thread.subscription is not None:
+            thread.subscription.close()
+            thread.subscription = None
 
     async def _consume(self, client: MuseProtocolClient, sub: Subscription,
                        cursor: int, node_id: str, session_id: str, *,
@@ -622,11 +660,19 @@ class ProtocolDriver(MuseDriver):
                 elif name == "delta.message_done" and device == node_id:
                     outcome.done = payload
                     status = payload.get("status")
-                    if status not in (None, "completed"):
+                    # "interrupted" is what the web stop button and our own
+                    # /chat/cancel produce (probe 16); whatever streamed so far
+                    # is the answer, not a failure.
+                    if status not in (None, "completed", "interrupted"):
                         raise UpstreamError(f"Muse generation failed: {status}")
                     break
             if outcome.done is not None:
                 break
+            if not events and outcome.done is None and (sub.closed or not client.alive):
+                # The reader stopped or the transport died mid-turn; without
+                # this the poll loop below would spin until the full timeout.
+                raise UpstreamError(
+                    "chat subscription ended before the turn completed")
             elapsed = time.monotonic() - started
             if elapsed > timeout:
                 raise UpstreamTimeout("Muse generation timed out")
@@ -711,6 +757,9 @@ class ProtocolDriver(MuseDriver):
         state = self._state(account.id)
         conn = await self._acquire_conn(account, state, None)
         sub: Subscription | None = None
+        client: MuseProtocolClient | None = None
+        turn_started = False
+        sid = ""
         try:
             client = conn.client
             assert client is not None
@@ -720,7 +769,9 @@ class ProtocolDriver(MuseDriver):
             items = await self._items(client, prompt, images)
             node_id = str(uuid.uuid4())
             ack = await client.chat_stream(thread.session_id, items, node_id=node_id)
+            turn_started = True
             thread.session_id = str(ack.get("session_id") or thread.session_id)
+            sid = thread.session_id
             sub = await client.subscribe(thread.session_id)
             outcome = _Outcome()
             started = time.monotonic()
@@ -749,6 +800,14 @@ class ProtocolDriver(MuseDriver):
                 width=resource.get("width") if isinstance(resource.get("width"), int) else None,
                 height=resource.get("height") if isinstance(resource.get("height"), int) else None,
             )
+        except BaseException:
+            # Image/video generation runs tens of seconds upstream; when the
+            # caller goes away (task cancelled, client disconnect, failover)
+            # the generation must be stopped, not left running.
+            if turn_started and client is not None and sid:
+                with contextlib.suppress(BaseException):
+                    await asyncio.wait_for(client.cancel(sid), 5)
+            raise
         finally:
             if sub is not None:
                 sub.close()

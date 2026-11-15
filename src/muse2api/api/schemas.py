@@ -30,6 +30,10 @@ class ChatCompletionRequest(_Lenient):
     max_tokens: int | None = None
     tools: list[dict[str, Any]] | None = None
     tool_choice: Any = None
+    # Executed parameters.
+    stop: str | list[str] | None = None
+    n: int | None = Field(default=None, ge=1, le=8)
+    response_format: dict[str, Any] | None = None
 
 
 class ImageGenerationRequest(_Lenient):

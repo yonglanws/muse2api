@@ -4,13 +4,15 @@
 
 muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/completions`、`/v1/images/generations`、`/v1/videos` 这些熟悉的 OpenAI 接口，对内通过原生 Noise 协议连接 muse.ai 的网页 Agent。它不模拟网页点击，也不把提示词简单拼在聊天框里，而是直接使用 muse.ai 自己的会话、线程和客户端工具通道。
 
-这一版是 **0.8.0**。
+这一版是 **0.9.0**。
 
 ## 先说结论
 
-- **一个地址就能接入**：把 `base_url` 指向 `http://<host>:18610/v1`，OpenAI SDK、LobeChat、Cherry Studio 或自研 Agent 都能用。
+- **一个地址就能接入**：把 `base_url` 指向 `http://<host>:18610/v1`，OpenAI SDK、LobeChat、Cherry Studio 或自研 Agent 都能用。浏览器端应用也能直接调（`/v1/*` 默认 `Access-Control-Allow-Origin: *`，与 api.openai.com 一致）。
 - **不需要 Chromium**：推荐 `MUSE2API_DRIVER=protocol`，直接用 Noise + `chat.stream` 通信，镜像约 194 MB。
 - **单账号真高并发**：逆向实测上游按 VM 并行执行轮次（单连接 12 条并发流零错误），网关用连接池 + 预热把这份并发能力完整交给调用方，默认单账号 12 并发。
+- **异常路径也干净**：客户端断开、超时、换号重试都会真正取消上游正在执行的轮次（逆向确认 `/chat/cancel` 生效），被中止的线程直接丢弃，不会把半截回复泄漏进下一轮。
+- **参数真的执行**：`response_format`（json_object / json_schema）、`stop`、`n>1` 不再是摆设；错误永远返回 OpenAI 错误信封。
 - **系统提示词生效**：`system` / `developer` 消息会被整理成独立指令块，再和当前用户消息一起发送。
 - **工具调用真的执行**：OpenAI `tools` 会被注册成 muse.ai 的原生客户端命令，Agent 在自己的工具循环里调用，再还原成标准 `tool_calls`。
 - **多账号、多会话**：账号池负责调度、冷却、故障转移；会话按 API Key 隔离，热线程复用降低首字延迟。
@@ -200,6 +202,7 @@ curl http://localhost:18610/v1/videos \
 | `MUSE2API_POOL_STRATEGY` | `affinity` | `lru` / `round_robin` / `affinity` |
 | `MUSE2API_ACCOUNT_MAX_CONCURRENCY` | `12` | 每账号并行请求数（上游实测 12 并发无压力） |
 | `MUSE2API_PROTOCOL_CONNECTIONS` | `2` | 每账号并行 Noise 连接数，并发轮次分摊其上 |
+| `MUSE2API_CORS_ORIGINS` | `*` | 允许跨域调 `/v1/*` 的来源（逗号分隔）；`/admin/*` 仍只对 Cookie 导入插件放行 |
 | `MUSE2API_WARM_THREADS` | `2` | 浏览器驱动预热线程数 |
 | `MUSE2API_MAX_FAILOVER` | `2` | 换账号重试次数 |
 | `MUSE2API_ACCOUNT_COOLDOWN` | `120` | 错误后的冷却秒数 |
@@ -268,6 +271,7 @@ docker run -d --name muse2api \
 4. 没有 `system` 消息、只用普通用户文本描述身份时，直接问"你是谁"仍可能自称 Muse——这与 OpenAI 语义一致（user 弱于 system）。
 5. 历史图片只保留占位符，跨线程依赖完整图片细节时可能丢失。
 6. 单账号并发已按上游实测放开（默认 12，逆向验证单连接 12 条并行流无错误）；要更高并发仍建议增加账号——一个 muse.ai 账号运行在一台 VM 上，并发高时各轮次共享同一台 VM 的算力与配额。
+7. `temperature` / `top_p` / `max_tokens` 等采样参数被接受但忽略——muse.ai 不暴露采样控制（逆向确认）。`response_format` 的 JSON 模式靠指令块 + 解析校验执行，极端情况下可能返回未通过校验的原始文本。
 
 ## 来路
 

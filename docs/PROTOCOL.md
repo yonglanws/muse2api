@@ -74,6 +74,25 @@ MUSE2API_PROTOCOL_THREAD_TTL=21600
 - **预热**：`prewarm` 在启动时后台建好第一条连接，首个请求不再支付 3-20 秒握手。
 - **`n>1` 图片并行**：一次生成多张图片时各轮并发执行。
 
+### 3.2 异常路径与上游取消（0.9.0）
+
+对 `/chat/cancel` 与轮次生命周期的逆向实测（probe 16，真实 muse.ai）：
+
+| 场景 | 结果 |
+|---|---|
+| 轮次进行中 `POST /chat/cancel {session_id}` | 立即返回 `{"cancelled": true, "message_id": ...}`；无需 message_id |
+| 取消后的事件流 | 2 秒内出现 `delta.message_done`，`status` 为 **`interrupted`**（不是 completed 也不是错误）；`text_append` 立即停止 |
+| 并行轮次互斥性 | 取消其中一条并行轮次，另一条正常跑完，互不影响 |
+| `delta.message_done` 载荷 | 携带完整 transcript 与 `metadata.model`，**不含 token 计数**（usage 仍是网关近似值） |
+
+由此 0.9.0 修复了三类异常路径缺陷：
+
+- **孤儿轮次**：0.8.0 及之前，`client.cancel` 是死代码——取消事件只在驱动生成器已被抛弃后才被设置。现在驱动在轮次未完成就退出时（客户端断开、总超时、首字超时换号、`stop` 截断）一律 best-effort 调用 `/chat/cancel` 并记录日志；网关也会立即关闭驱动生成器而不是等 GC。
+- **线程污染**：被中止的轮次事件会继续追加到上游线程，下次订阅会从旧 seq 重放孤儿轮次的文本。现在中止即弃线程：从会话表移除并关闭订阅，下次同会话请求重开线程、重发全量历史。
+- **死订阅**：Noise 传输中途断开时，订阅读取循环退出或永久空转。消费循环现在检测"订阅已关闭或连接已死且未收到完成事件"，立即报错换号，不再空转到 300 秒总超时。轮次之间被上游关闭的订阅会自动重开（从线程 seq 续播）。
+
+`delta.message_done` 的 `status: "interrupted"` 被视为正常结束（部分文本就是答案）；只有其他失败状态才触发换号重试。图片/视频轮次同样在调用方消失时取消上游生成。
+
 ## 4. 系统提示词
 
 muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条用户消息。0.7.0 起网关用两层机制逼近真正的 system 语义。
@@ -98,7 +117,7 @@ muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条�
 
 **0.7.0 实测（真实 muse.ai，经网关全链路）**：带 system 的会话中，模型自称角色名（"我是 Atlas-77，一个天气问答助手"）、回复格式精确跟随（两短句）、记忆隔离生效（不再泄露账号主人信息）；同线程续接保持规则；工具调用与结果续接正常。
 
-**已知边界**（逆向确认，无法绕过）：muse.ai 的核心身份写在服务端静态提示词里（VM 内 `workspace/system/system_prompt.md`，73 KB，可读但没有写入口）。没有 system 消息、仅把身份写在普通用户文本里时，直接问"你是谁"仍会自称 Muse——这与 OpenAI 语义一致（user 消息弱于 system），不是网关缺陷。`hidden_prompt` 字段行为惰性；Shared Agents（自带 identity/definition 的真 system 通道）服务端已 404 下线；`goal_prompt` 返回 410；`chat.stream` 的 `model` 字段被接受但忽略。
+**已知边界**（逆向确认，无法绕过）：muse.ai 的核心身份写在服务端静态提示词里（VM 内 `workspace/system/system_prompt.md`，73 KB，可读但没有写入口）。没有 system 消息、仅把身份写在普通用户文本里时，直接问"你是谁"仍会自称 Muse——这与 OpenAI 语义一致（user 消息弱于 system），不是网关缺陷。`hidden_prompt` 字段行为惰性；Shared Agents（自带 identity/definition 的真 system 通道）服务端已 404 下线；`goal_prompt` 返回 410；`chat.stream` 的 `model` 字段被接受但忽略；`temperature` / `top_p` 等采样参数上游不暴露（0.9.0 探针确认 `delta.message_done` 也不含 token 计数），网关按"接受但忽略"处理，JSON 模式用指令块 + 解析校验近似实现。
 
 ## 5. 工具调用（原生客户端工具通道 + Planner 兜底）
 
@@ -180,7 +199,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 ## 9. 部署与回滚
 
 ```bash
-docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.8.0 .
+docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.9.0 .
 docker run -d --name muse2api-web \
   --restart unless-stopped \
   -p 18610:18610 \
@@ -194,7 +213,7 @@ docker run -d --name muse2api-web \
   -e MUSE2API_ACCOUNT_MAX_CONCURRENCY=12 \
   -e MUSE2API_KEEPALIVE_ENABLED=true \
   -e MUSE2API_EMULATE_TOOLS=true \
-  muse2api-web:protocol-0.8.0
+  muse2api-web:protocol-0.9.0
 ```
 
 回滚到浏览器驱动（保留旧容器）：

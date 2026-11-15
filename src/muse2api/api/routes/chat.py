@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -49,6 +49,108 @@ class _Plan:
     tools: list[dict] | None
     force_tool: bool = False
     tool_continuation: bool = False
+    stop: list[str] | None = None
+    json_directive: str | None = None
+
+
+_JSON_DIRECTIVE = (
+    "[[OUTPUT FORMAT]]\n"
+    "Respond with a single valid JSON value and nothing else: no prose before or "
+    "after it and no markdown code fences. Your entire reply must be accepted by "
+    "JSON.parse."
+)
+_MAX_SCHEMA_CHARS = 6000
+
+
+def _json_directive(response_format) -> str | None:
+    """OpenAI ``response_format`` rendered as a prompt directive (muse.ai has
+    no native JSON mode; probe 16 shows the sampling surface is fixed)."""
+    if not isinstance(response_format, dict):
+        return None
+    rtype = response_format.get("type")
+    if rtype == "json_object":
+        return _JSON_DIRECTIVE
+    if rtype == "json_schema":
+        schema = response_format.get("json_schema") or {}
+        if not isinstance(schema, dict):
+            return _JSON_DIRECTIVE
+        name = schema.get("name") or "response"
+        body = json.dumps(schema.get("schema") or {}, ensure_ascii=False)[:_MAX_SCHEMA_CHARS]
+        return (_JSON_DIRECTIVE
+                + f"\nThe JSON must conform to this JSON Schema ('{name}'):\n{body}")
+    return None
+
+
+def _stop_list(stop) -> list[str] | None:
+    if isinstance(stop, str) and stop:
+        return [stop]
+    if isinstance(stop, list):
+        seqs = [s for s in stop if isinstance(s, str) and s]
+        return seqs or None
+    return None
+
+
+def _first_stop_index(text: str, stop: list[str] | None) -> int | None:
+    if not stop or not text:
+        return None
+    best = None
+    for seq in stop:
+        i = text.find(seq)
+        if i != -1 and (best is None or i < best):
+            best = i
+    return best
+
+
+def _apply_stop(text: str, stop: list[str] | None) -> str:
+    i = _first_stop_index(text, stop)
+    return text if i is None else text[:i]
+
+
+def _extract_json(text: str) -> str | None:
+    """Best-effort extraction of the JSON value from a model reply."""
+    s = (text or "").strip()
+    fence = re.search(r"```(?:json|[A-Za-z0-9_-]*)[ \t]*\r?\n(.*?)\r?\n?[ \t]*```",
+                      s, re.DOTALL)
+    if fence:
+        s = fence.group(1).strip()
+    elif s.startswith("```"):
+        s = re.sub(r"^```[A-Za-z0-9_-]*[ \t]*\r?\n?", "", s)
+        s = re.sub(r"\r?\n?[ \t]*```\s*$", "", s).strip()
+    if s.startswith(("{", "[")):
+        closer = "}" if s[0] == "{" else "]"
+        end = s.rfind(closer)
+        if end > 0:
+            return s[:end + 1]
+    # prose around a bare JSON value: only accept a parseable candidate
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = s.find(opener)
+        if start != -1:
+            end = s.rfind(closer)
+            if end > start:
+                candidate = s[start:end + 1]
+                try:
+                    json.loads(candidate)
+                except ValueError:
+                    continue
+                return candidate
+    if s.startswith('"') and s.endswith('"') and len(s) >= 2:
+        try:
+            json.loads(s)
+        except ValueError:
+            return None
+        return s
+    return None
+
+
+def _needs_json_retry(text: str) -> bool:
+    value = _extract_json(text)
+    if value is None:
+        return True
+    try:
+        json.loads(value)
+    except ValueError:
+        return True
+    return False
 
 
 def _select_tools(tools: list[dict] | None, tool_choice) -> tuple[list[dict] | None, bool]:
@@ -71,6 +173,10 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
     tools, force_tool = _select_tools(body.tools, body.tool_choice)
     if not settings.emulate_tools:
         tools, force_tool = None, False
+    # JSON mode rides on a prompt directive; with tools the reply is a tool
+    # call anyway, so the directive would only corrupt it.
+    json_directive = None if tools else _json_directive(body.response_format)
+    stop = _stop_list(body.stop)
 
     if tools:
         plan = system_prompt.build_tool_prompt(
@@ -92,6 +198,7 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
             tools=tools,
             force_tool=force_tool,
             tool_continuation=plan.tool_continuation,
+            stop=stop,
         )
 
     system = system_prompt.extract_system_prompt(messages)
@@ -108,6 +215,8 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
             system_fp=plan.system_fingerprint,
             tools=None,
             tool_continuation=plan.tool_continuation,
+            stop=stop,
+            json_directive=json_directive,
         )
 
     flat = flatten_messages(messages)
@@ -123,6 +232,8 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
         current_user_text=current,
         system_fp=None,
         tools=None,
+        stop=stop,
+        json_directive=json_directive,
     )
 
 
@@ -176,6 +287,33 @@ def _retry_request(plan: _Plan, req: ChatRequest, messages: list[dict],
     )
 
 
+def _json_retry_request(plan: _Plan, req: ChatRequest, messages: list[dict],
+                        max_prompt_chars: int = 18000) -> ChatRequest:
+    """A fresh-thread retry that restates the JSON-only contract."""
+    base = system_prompt.build_prompt(messages, max_prompt_chars=max_prompt_chars)
+    prompt = (f"{base.prompt}\n\n{plan.json_directive}\n\n"
+              "Your previous reply was not valid JSON. This reply MUST be a "
+              "single valid JSON value and nothing else.")
+    return ChatRequest(
+        prompt=prompt,
+        model=req.model,
+        images=req.images,
+        timeout=req.timeout,
+        first_token_timeout=req.first_token_timeout,
+        conversation_hint=req.conversation_hint,
+        turns=plan.turns,
+        followup_prompt=None,
+        tool_continuation=False,
+        images_current_only=True,
+        system_fingerprint=plan.system_fp,
+        page_echo=req.page_echo,
+        force_new_thread=True,
+        tools=None,
+        system_prompt=plan.system_prompt or None,
+        cancel=req.cancel,
+    )
+
+
 async def _collect(stream) -> str:
     return "".join([delta async for delta in stream])
 
@@ -212,12 +350,22 @@ async def _pump_stream(stream, interval: float, holder: list[str],
 
 async def _retry_nonstream(text: str, plan: _Plan, req: ChatRequest, svc: Services,
                            messages: list[dict]) -> str:
-    if _needs_tool_retry(text, plan):
+    if plan.tools:
+        if _needs_tool_retry(text, plan):
+            for _ in range(max(0, svc.settings.tool_retries)):
+                attempt = _retry_request(plan, req, messages, svc.settings.max_prompt_chars)
+                text = await _collect(svc.gateway.chat_stream(attempt))
+                if not _needs_tool_retry(text, plan):
+                    return text
+        return text
+    if plan.json_directive:
         for _ in range(max(0, svc.settings.tool_retries)):
-            attempt = _retry_request(plan, req, messages, svc.settings.max_prompt_chars)
+            if not _needs_json_retry(text):
+                return _extract_json(text) or text
+            attempt = _json_retry_request(plan, req, messages, svc.settings.max_prompt_chars)
             text = await _collect(svc.gateway.chat_stream(attempt))
-            if not _needs_tool_retry(text, plan):
-                return text
+        value = _extract_json(text)
+        return value if value is not None else text
     return text
 
 
@@ -231,6 +379,14 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
     plan = _build_plan(body, messages, svc.settings)
     if not plan.prompt and not plan.images:
         raise InvalidRequest("messages contain no text or images")
+    if plan.json_directive:
+        # The directive rides with the first (full) prompt and with every
+        # follow-up turn, so JSON mode survives thread reuse.
+        plan.prompt = f"{plan.json_directive}\n\n{plan.prompt}"
+        if plan.followup_prompt:
+            plan.followup_prompt = f"{plan.json_directive}\n\n{plan.followup_prompt}"
+    if body.stream and (body.n or 1) > 1:
+        raise InvalidRequest("n > 1 is not supported with stream=true")
 
     images = [InputImage(*(await load_image_ref(ref))) for ref in plan.images]
     cancel = asyncio.Event()
@@ -254,6 +410,19 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:24]
     created = int(time.time())
     model_name = body.model or spec.id
+
+    if not body.stream and (body.n or 1) > 1:
+        # Independent completions: ephemeral threads so the pool spreads them
+        # over the connection pool instead of queueing on one conversation.
+        async def one() -> str:
+            copy = replace(req, conversation_hint=None, cancel=asyncio.Event())
+            text = await _collect(svc.gateway.chat_stream(copy))
+            return await _retry_nonstream(text, plan, copy, svc, messages)
+
+        texts = list(await asyncio.gather(*[one() for _ in range(body.n or 1)]))
+        return _completion(plan, "", completion_id, created, model_name,
+                           choices_texts=texts)
+
     stream = svc.gateway.chat_stream(req)
 
     if not body.stream:
@@ -263,7 +432,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
 
     def chunk(delta: dict, finish: str | None = None) -> dict:
         return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
-                "model": model_name,
+                "model": model_name, "system_fingerprint": "muse2api",
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
     async def first_delta() -> str | None:
@@ -294,6 +463,18 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                     produced = holder[-1] if holder else ""
                     if not _needs_tool_retry(produced, plan):
                         break
+            if plan.json_directive and not plan.tools:
+                for _ in range(max(0, svc.settings.tool_retries)):
+                    if not _needs_json_retry(produced):
+                        break
+                    attempt = _json_retry_request(
+                        plan, req, messages, svc.settings.max_prompt_chars)
+                    holder = []
+                    async for piece in _pump_stream(
+                            svc.gateway.chat_stream(attempt), interval, holder):
+                        yield piece
+                    produced = holder[-1] if holder else ""
+                produced = _extract_json(produced) or produced
             tool = None
             reply = None
             calls = tool_plan.parse_tool_calls_list(produced, plan.tools) if plan.tools else None
@@ -362,10 +543,25 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                     if not pending.done():
                         pending.cancel()
             produced = first or ""
+            stop_idx = _first_stop_index(produced, plan.stop)
+            if stop_idx is not None:
+                produced = produced[:stop_idx]
             yield _sse(chunk({"role": "assistant", "content": produced}))
-            async for delta in stream:
-                produced += delta
-                yield _sse(chunk({"content": delta}))
+            finished_early = stop_idx is not None
+            if not finished_early:
+                async for delta in stream:
+                    produced += delta
+                    stop_idx = _first_stop_index(produced, plan.stop)
+                    if stop_idx is not None:
+                        # OpenAI semantics: cut before the stop sequence and
+                        # end; breaking lets the finally below cancel the
+                        # upstream turn.
+                        already = len(produced) - len(delta)
+                        tail = produced[already:stop_idx] if stop_idx > already else ""
+                        if tail:
+                            yield _sse(chunk({"content": tail}))
+                        break
+                    yield _sse(chunk({"content": delta}))
             yield _sse(chunk({}, "stop"))
             if (body.stream_options or {}).get("include_usage"):
                 usage = _usage(plan.prompt, produced)
@@ -382,7 +578,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
             await stream.aclose()
         yield _sse("[DONE]")
 
-    buffered = bool(plan.tools)
+    buffered = bool(plan.tools) or bool(plan.json_directive)
     if svc.settings.stream_heartbeat_interval > 0:
         return StreamingResponse(buffered_events(None) if buffered else events(None),
                                  media_type="text/event-stream",
@@ -395,8 +591,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-def _completion(plan: _Plan, text: str,
-                completion_id: str, created: int, model_name: str) -> dict:
+def _message_from_text(plan: _Plan, text: str) -> tuple[dict, str]:
     message: dict = {}
     finish = "stop"
     if plan.tools:
@@ -417,12 +612,30 @@ def _completion(plan: _Plan, text: str,
             else:
                 message = {"role": "assistant", "content": _clean_text(text)}
     else:
-        message = {"role": "assistant", "content": _clean_text(text)}
+        message = {"role": "assistant",
+                   "content": _apply_stop(_clean_text(text), plan.stop)}
+    return message, finish
+
+
+def _completion(plan: _Plan, text: str,
+                completion_id: str, created: int, model_name: str, *,
+                choices_texts: list[str] | None = None) -> dict:
+    if choices_texts is None:
+        message, finish = _message_from_text(plan, text)
+        choices = [{"index": 0, "message": message, "finish_reason": finish}]
+        usage_text = text
+    else:
+        choices = []
+        for index, one_text in enumerate(choices_texts):
+            message, finish = _message_from_text(plan, one_text)
+            choices.append({"index": index, "message": message, "finish_reason": finish})
+        usage_text = "".join(choices_texts)
     return {
         "id": completion_id,
         "object": "chat.completion",
         "created": created,
         "model": model_name,
-        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-        "usage": _usage(plan.prompt, text),
+        "system_fingerprint": "muse2api",
+        "choices": choices,
+        "usage": _usage(plan.prompt, usage_text),
     }

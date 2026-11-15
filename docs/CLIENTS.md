@@ -56,6 +56,20 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机�
 
 客户端把工具结果以 `role: "tool"` 发回来后，网关续接同一线程继续回答。流式请求返回 `delta.tool_calls`，`finish_reason` 为 `tool_calls`。
 
+## 参数支持（0.9.0）
+
+| 参数 | 行为 |
+|---|---|
+| `response_format: {"type": "json_object"}` | 注入 JSON-only 指令块；产出剥掉代码围栏并用 `json.loads` 校验，不合格自动换线程重试（`MUSE2API_TOOL_RETRIES` 次），仍失败时返回原始文本 |
+| `response_format: {"type": "json_schema", ...}` | 同上，schema 摘要一并写进指令块 |
+| `stop`（字符串或列表，最多生效于纯文本路径） | 命中即在该序列前截断并结束流式；上游轮次同时被取消（不走完整个生成） |
+| `n > 1` | 非流式：并发独立补全，合并成多个 `choices`（临时线程，不共享会话）；流式：返回 400（诚实报错优于静默忽略） |
+| `temperature` / `top_p` / `max_tokens` / `presence_penalty` 等 | 接受但忽略——muse.ai 不暴露采样控制 |
+
+## 浏览器直连
+
+`/v1/*` 默认返回 `Access-Control-Allow-Origin: *`（与 api.openai.com 一致），浏览器端应用（Open WebUI、LobeChat web、LibreChat 等）可以直接把 base_url 指过来。需要收紧时设置 `MUSE2API_CORS_ORIGINS=逗号分隔的来源列表`。`/admin/*` 仍然只对 Cookie 导入插件（`chrome-extension://`）放行跨域。
+
 ## 多轮对话
 
 与 OpenAI 一样，补全是无状态的：模型能看到的上下文就是请求 `messages` 里的内容。`user` 字段只影响网关的线程复用，不引入服务端记忆。
@@ -66,6 +80,7 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机�
 - 会话键按 API Key 隔离；两把 Key 传相同 `user` 也不会共享线程。
 - 没有 `user` 的匿名请求永远不会续接别人的线程。
 - 同一会话的并行请求会在同一线程上排队执行（0.8.0 起），不会互相破坏对方的回复流。
+- 客户端断开、总超时或换号重试会取消上游正在执行的轮次并丢弃该线程（0.9.0 起）；下一次请求自动重发完整历史，不会串进半截回复。
 
 ## 已知限制
 

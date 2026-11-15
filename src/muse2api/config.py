@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # --- auth ---
     api_key: str = Field(default="", description="Bearer key for /v1/*. Auto-generated if empty.")
     admin_key: str = Field(default="", description="Bearer key for /admin/*. Falls back to api_key.")
+    cors_origins: str = Field(
+        default="*",
+        description="Comma-separated origins allowed to call /v1/* from a browser. "
+        "'*' mirrors api.openai.com's Access-Control-Allow-Origin: *; admin routes "
+        "stay restricted to the cookie-import extension.",
+    )
 
     # --- storage ---
     data_dir: Path = Path("data")
