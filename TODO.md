@@ -220,4 +220,4 @@ anonymous requests used to latch onto each other's threads.
   - `api/deps.py` uses `x-astrbot-conversation-id` as the conversation key. `core/prompt.py` ignores system/tool plumbing when deciding whether a history continues the page; the browser driver keeps a persona fingerprint and reuses the hot page only for the same persona.
   - Tab eviction is LRU; AstrBot streaming is buffered so disclaimers and tool calls can be rewritten before the first chunk.
   - `MUSE2API_UPSTREAM_PROXY` fixes session renewal when muse.ai is only reachable through the browser proxy.
-  - 29 tests in `tests/test_astrbot_compat.py`; live-tested with AstrBot 4.29.4's provider and a Docker deployment. See `docs/ASTRBOT.md` and `docs/ASTRBOT-TEST-REPORT.md`.
+  - 30 tests in `tests/test_astrbot_compat.py`; live-tested with AstrBot 4.29.4's provider and a Docker deployment. See `docs/ASTRBOT.md` and `docs/ASTRBOT-TEST-REPORT.md`.

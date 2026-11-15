@@ -140,7 +140,7 @@ generic stream     13.5s: 晚安，小红，好梦。
 - `src/muse2api/drivers/browser/driver.py`：热线程续接、Persona 指纹、LRU tab、page_echo。
 - `src/muse2api/upstream/muse.py` / `drivers/http/driver.py`：上游代理。
 - `src/muse2api/config.py`：AstrBot / 工具 / 代理配置。
-- `tests/test_astrbot_compat.py`（新增）：29 个 AstrBot 适配测试。
+- `tests/test_astrbot_compat.py`（新增）：30 个 AstrBot 适配测试。
 - `docs/ASTRBOT.md`（新增）：接入与配置说明。
 
 ## 6. 部署状态
