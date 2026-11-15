@@ -83,6 +83,10 @@ class FakeClient:
         self.sub_calls: list[tuple[str, int]] = []
         self.cancelled = False
         self._events: list[dict] = []
+        self.node_id = "node-fixed-1"
+        self.registrations: list[dict] = []
+        self.invoke_replies: list[tuple[str, bool, dict]] = []
+        self.pending_invoke: dict | None = None
 
     async def chat_stream(self, session_id: str, items: list[dict], *,
                           node_id: str | None = None, hidden_prompt: str | None = None,
@@ -91,17 +95,22 @@ class FakeClient:
         text = items[-1].get("text", "") if items else ""
         message_id = f"m{len(self.calls)}"
         base = len(self._events)
-        self._events.extend([
+        events = [
             {"event": "delta.message_start", "seq": base + 1, "payload": {
                 "chat_context": {"device_id": node_id}, "message_id": message_id}},
             {"event": "delta.text_append", "seq": base + 2, "payload": {
                 "message_id": message_id, "text": f"reply:{text}",
                 "session_id": session_id}},
-            {"event": "delta.message_done", "seq": base + 3, "payload": {
-                "chat_context": {"device_id": node_id}, "status": "completed",
-                "transcript": {"messages": [{"content": [
-                    {"type": "text", "text": f"reply:{text}"}]}]}}},
-        ])
+        ]
+        if self.pending_invoke is not None:
+            invoke = dict(self.pending_invoke)
+            invoke["seq"] = base + 3
+            events.append(invoke)
+        events.append({"event": "delta.message_done", "seq": base + 4, "payload": {
+            "chat_context": {"device_id": node_id}, "status": "completed",
+            "transcript": {"messages": [{"content": [
+                {"type": "text", "text": f"reply:{text}"}]}]}}})
+        self._events.extend(events)
         return {"session_id": session_id, "is_thread": True, "message_id": message_id}
 
     async def subscribe(self, session_id: str, *, after_stream_seq: int = 0, **kwargs) -> FakeSub:
@@ -112,12 +121,20 @@ class FakeClient:
         self.cancelled = True
         return True
 
+    async def register_capabilities(self, commands: dict) -> dict:
+        self.registrations.append(dict(commands))
+        return {"accepted_hatch_app_commands": len(commands), "rejected_ids": []}
+
+    async def reply_invoke(self, invoke_id: str, ok: bool, **kwargs) -> None:
+        self.invoke_replies.append((invoke_id, ok, kwargs))
+
 
 def _driver_with_fake() -> tuple[ProtocolDriver, FakeClient]:
     driver = ProtocolDriver(Settings())
     client = FakeClient()
 
     async def fake_client(account: Account, state) -> FakeClient:
+        state.client = client
         return client
 
     driver._client = fake_client  # type: ignore[method-assign]
@@ -176,3 +193,72 @@ async def test_protocol_health_is_ready():
     health = await driver.health()
     assert health["ok"] is True
     assert health["driver"] == "protocol"
+
+
+# ------------------------------------------------------------ native tools
+def test_tools_to_commands_maps_openai_schema():
+    from muse2api.drivers.protocol.driver import command_id_for_tool, tools_to_commands
+    tools = [{"type": "function", "function": {
+        "name": "get weather!", "description": "weather lookup",
+        "parameters": {"type": "object", "properties": {
+            "city": {"type": "string", "description": "city name"},
+            "days": {"type": "integer", "enum": [1, 3, 7]}},
+            "required": ["city"]}}}]
+    commands = tools_to_commands(tools)
+    assert list(commands) == ["ui.navigate.get_weather"]
+    body = commands["ui.navigate.get_weather"]
+    assert body["description"] == "weather lookup"
+    assert set(body["required"]) == {"city"}
+    assert set(body["optional"]) == {"days"}
+    assert body["required"]["city"]["description"] == "city name"
+    assert body["optional"]["days"]["enum_values"] == ["1", "3", "7"]
+    assert body["timeout_ms"] == 30000
+    assert command_id_for_tool("plain-name") == "ui.navigate.plain-name"
+
+
+async def test_native_tool_invoke_is_captured_and_reencoded():
+    driver, client = _driver_with_fake()
+    client.pending_invoke = {
+        "event": "client.invoke", "payload": {
+            "command_id": "ui.navigate.get_weather", "invoke_id": "inv-1",
+            "params_json": '{"mode":"perform","city":"Tokyo"}',
+        }}
+    account = Account(id="acc_test")
+    tools = [{"type": "function", "function": {
+        "name": "get_weather", "description": "weather",
+        "parameters": {"type": "object", "properties": {
+            "city": {"type": "string"}}, "required": ["city"]}}}]
+    deltas = [d async for d in driver.chat_stream(
+        account, _chat("weather?", [("user", "weather?")], tools=tools))]
+    assert deltas == ['{"tool": "get_weather", "arguments": {"city": "Tokyo"}}']
+    await asyncio.sleep(0)  # let the scheduled invoke ack task run
+    # the commands were registered on the connection before the turn
+    assert client.registrations
+    assert "ui.navigate.get_weather" in client.registrations[0]
+    # the invoke was answered so the agent never waits for the timeout
+    assert ("inv-1", True) in [(i, ok) for i, ok, _ in client.invoke_replies]
+    # Muse's prose stayed out of the tool-call reply
+    assert all("reply:" not in d for d in deltas)
+    # commands stay registered for the connection lifetime (re-registering the
+    # same set later is not picked up by the VM); no empty re-registration
+    assert all(reg for reg in client.registrations)
+
+
+async def test_unmapped_invoke_is_refused_without_capture():
+    driver, client = _driver_with_fake()
+    client.pending_invoke = {
+        "event": "client.invoke", "payload": {
+            "command_id": "ui.navigate.get_weather", "invoke_id": "inv-2",
+            "params_json": '{"city":"Tokyo"}',
+        }}
+    account = Account(id="acc_test")
+    # no tools in the request: nothing is registered, nothing captured
+    deltas = [d async for d in driver.chat_stream(
+        account, _chat("hello", [("user", "hello")]))]
+    assert len(deltas) == 1 and deltas[0].endswith("hello")
+    await asyncio.sleep(0)  # let the scheduled invoke ack task run
+    assert client.registrations == []
+    # the stray invoke is refused so the agent never waits for a timeout
+    assert (False, "not_available") in [
+        (ok, (kw.get("error") or {}).get("code"))
+        for _, ok, kw in client.invoke_replies]

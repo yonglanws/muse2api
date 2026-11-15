@@ -30,6 +30,22 @@ def client(settings):
 
 
 @pytest.fixture
+def planner_client(tmp_path):
+    """The API with the flat JSON planner instead of native client tools."""
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        api_key=API_KEY,
+        admin_key=ADMIN_KEY,
+        driver="mock",
+        tool_channel="planner",
+    )
+    app = create_app(settings, MockDriver(delay=0))
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
 def auth() -> dict:
     return {"Authorization": f"Bearer {API_KEY}"}
 

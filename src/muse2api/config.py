@@ -143,6 +143,12 @@ class Settings(BaseSettings):
         description="Emulate OpenAI tool calling by asking the model for a JSON call "
         "intent and parsing it. muse.ai itself never executes client tools.",
     )
+    tool_channel: Literal["auto", "native", "planner"] = Field(
+        default="auto",
+        description="'native' (and 'auto') registers OpenAI tools as native client "
+        "commands (client.register_capabilities) so muse.ai calls them through its "
+        "own client.invoke loop; 'planner' uses only the flat JSON planner prompt.",
+    )
     astrbot_tool_retries: int = Field(
         default=2,
         description="Retries when muse.ai refuses an emulated tool call instead of "

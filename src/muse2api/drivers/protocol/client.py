@@ -562,6 +562,54 @@ class MuseProtocolClient:
         except Exception:
             return False
 
+    # ------------------------------------------------------------ client tools
+    async def register_capabilities(self, commands: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """Declare ``hatch_app_commands`` for this connection.
+
+        Commands in the ``ui.navigate.*`` namespace are injected into the
+        agent's tool list; the agent calls them and the gateway receives
+        ``client.invoke`` events on the thread subscription.  ``linked_nodes``
+        binds the declaration to this client's stable ``node_id`` (the same id
+        every ``chat.stream`` turn is sent with).
+        """
+        body: dict[str, Any] = {
+            "client_id": f"hatch-web-tab:{self.node_id}",
+            "platform": "web",
+            "display_name": "Muse Web",
+            "version": "0.0.0",
+            "capabilities": {
+                "data_sources": {},
+                "device_commands": {},
+                "hatch_app_commands": commands,
+                "rendering": {
+                    "supported_presentations": [],
+                    "supported_inline_presentations": [],
+                    "supported_text_entities": [],
+                },
+            },
+            "linked_nodes": [{"node_id": self.node_id}],
+        }
+        response = await self.request("POST", "/client/register-capabilities", body, 30)
+        if response.status != 200:
+            raise UpstreamError(
+                f"client.register-capabilities returned HTTP {response.status}")
+        try:
+            ack = response.json()
+        except ValueError:
+            ack = {}
+        return ack if isinstance(ack, dict) else {}
+
+    async def reply_invoke(self, invoke_id: str, ok: bool, *,
+                           payload: dict[str, Any] | None = None,
+                           error: dict[str, Any] | None = None) -> None:
+        """Answer a ``client.invoke`` event (must happen within ``timeout_ms``)."""
+        body: dict[str, Any] = {"invoke_id": invoke_id, "ok": bool(ok)}
+        if payload is not None:
+            body["payload_json"] = json.dumps(payload, ensure_ascii=False)
+        if error is not None:
+            body["error"] = error
+        await self.request("POST", "/client/invoke-result", body, 15)
+
     # ------------------------------------------------------------ files
     async def download_bytes(self, resource: dict[str, Any]) -> bytes:
         path = str(resource.get("path") or "")

@@ -83,6 +83,21 @@ def _select_tools(tools: list[dict] | None, tool_choice) -> tuple[list[dict] | N
     return tools, tool_choice == "required"
 
 
+def _tool_prompt(messages: list[dict], tools: list[dict], settings, *,
+                 conversation_id: str | None = None, force_tool: bool = False):
+    """Planner JSON is the guaranteed output contract; with the native tool
+    channel the tools are also registered as real client commands, so the
+    model may call them through its own invoke loop instead."""
+    native = getattr(settings, "tool_channel", "auto") != "planner"
+    return astrbot.build_tool_prompt(
+        messages, tools,
+        conversation_id=conversation_id,
+        max_prompt_chars=settings.astrbot_max_prompt_chars,
+        force_tool=force_tool,
+        native=native,
+    )
+
+
 def _build_plan(body: ChatCompletionRequest, request: Request, messages: list[dict],
                 settings) -> _Plan:
     use_astrbot = _astrbot_mode(settings, request, messages)
@@ -91,13 +106,11 @@ def _build_plan(body: ChatCompletionRequest, request: Request, messages: list[di
         tools, force_tool = None, False
     if use_astrbot:
         if tools:
-            # A flat JSON planner is far more reliable than asking muse.ai to
-            # emit nested OpenAI tool_calls, which it treats as fake capability.
-            ab = astrbot.build_tool_prompt(
+            ab = _tool_prompt(
                 messages,
                 tools,
+                settings,
                 conversation_id=astrbot_conversation_id(request),
-                max_prompt_chars=settings.astrbot_max_prompt_chars,
                 force_tool=force_tool,
             )
         else:
@@ -143,11 +156,7 @@ def _build_plan(body: ChatCompletionRequest, request: Request, messages: list[di
         # wins over Muse's built-in identity. Apply it to ordinary OpenAI clients
         # too, but leave requests without a system prompt on the old path.
         if tools:
-            ab = astrbot.build_tool_prompt(
-                messages, tools,
-                max_prompt_chars=settings.astrbot_max_prompt_chars,
-                force_tool=force_tool,
-            )
+            ab = _tool_prompt(messages, tools, settings, force_tool=force_tool)
         else:
             ab = astrbot.build_prompt(
                 messages, max_prompt_chars=settings.astrbot_max_prompt_chars,

@@ -38,7 +38,7 @@ muse2api turns muse.ai's chat, text-to-image and text-to-video features into sta
 
 The project focuses on **clean engineering and easy collaboration**:
 
-- **Pluggable drivers**: how we reach upstream is abstracted behind a `MuseDriver` interface. There is a mock driver, a browser (CDP) driver, and a native Noise/`chat.stream` protocol driver (0.5.0). They are fully independent of each other.
+- **Pluggable drivers**: how we reach upstream is abstracted behind a `MuseDriver` interface. There is a mock driver, a browser (CDP) driver, and a native Noise/`chat.stream` protocol driver (0.5.x). They are fully independent of each other.
 - **Strict layering**: the protocol layer, service layer, account pool and drivers each have a single responsibility and can be developed and tested on their own.
 - **Fully async**: built on FastAPI + asyncio; the CDP client uses `websockets`, so no request ever blocks a thread.
 - **Account pool**: multiple scheduling strategies, per-account concurrency limits, cooldown after failures, automatic removal of expired sessions, and automatic failover to another account.
@@ -179,7 +179,7 @@ docker compose up -d --build
 
 ### AstrBot / QQ
 
-Version 0.5.0 includes a native protocol driver plus the AstrBot adapter. The persona is moved into the current user turn, `x-astrbot-conversation-id` becomes the conversation key for isolation and thread reuse, client tools are emulated as standard OpenAI `tool_calls`, and muse.ai's out-of-character disclaimers are removed. Ordinary OpenAI clients that send a `system` message get the same persona bridge. Point AstrBot's provider at `http://<host>:18610/v1` with model `gpt-4o` (or `muse-chat`). See [docs/ASTRBOT.md](docs/ASTRBOT.md), [docs/PROTOCOL.md](docs/PROTOCOL.md) and the [test report](docs/ASTRBOT-TEST-REPORT.md).
+Version 0.5.1 includes a native protocol driver plus the AstrBot adapter. The persona is moved into the current user turn, `x-astrbot-conversation-id` becomes the conversation key for isolation and thread reuse, client tools are registered as real Muse client commands (`client.register_capabilities` -> `client.invoke`) and surfaced as standard OpenAI `tool_calls`, and muse.ai's out-of-character disclaimers are removed. Ordinary OpenAI clients that send a `system` message get the same persona bridge. Point AstrBot's provider at `http://<host>:18610/v1` with model `gpt-4o` (or `muse-chat`). See [docs/ASTRBOT.md](docs/ASTRBOT.md), [docs/PROTOCOL.md](docs/PROTOCOL.md) and the [test report](docs/ASTRBOT-TEST-REPORT.md).
 
 If muse.ai is only reachable through a proxy, set both `MUSE2API_BROWSER_PROXY` and `MUSE2API_UPSTREAM_PROXY` (session renewal/VM wake use Python HTTP, not the browser).
 

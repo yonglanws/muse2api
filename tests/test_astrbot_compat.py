@@ -235,14 +235,14 @@ def test_astrbot_identity_question_never_leaks_muse(client, auth, monkeypatch):
     assert "晓山瑞希" in content
 
 
-def test_emulated_tool_call_non_stream(client, auth, monkeypatch):
-    seen = _script_chat(client, monkeypatch,
+def test_emulated_tool_call_non_stream(planner_client, auth, monkeypatch):
+    seen = _script_chat(planner_client, monkeypatch,
                         '{"tool":"get_weather","arguments":{"city":"Tokyo"}}')
     tools = [{"type": "function", "function": {
         "name": "get_weather", "description": "weather",
         "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
                        "required": ["city"]}}}]
-    r = client.post("/v1/chat/completions", headers=_astrbot_headers(auth), json={
+    r = planner_client.post("/v1/chat/completions", headers=_astrbot_headers(auth), json={
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "东京天气怎么样？"}],
         "tools": tools,
@@ -256,6 +256,27 @@ def test_emulated_tool_call_non_stream(client, auth, monkeypatch):
     assert call["function"]["name"] == "get_weather"
     assert json.loads(call["function"]["arguments"]) == {"city": "Tokyo"}
     assert "[[ASTRBOT TOOL PLANNER]]" in seen[0].prompt
+
+
+def test_native_tool_prompt_advertises_client_commands(client, auth, monkeypatch):
+    seen = _script_chat(client, monkeypatch,
+                        '{"tool":"get_weather","arguments":{"city":"Tokyo"}}')
+    tools = [{"type": "function", "function": {
+        "name": "get_weather", "description": "weather",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}},
+                       "required": ["city"]}}}]
+    r = client.post("/v1/chat/completions", headers=_astrbot_headers(auth), json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "东京天气怎么样？"}],
+        "tools": tools,
+    })
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["finish_reason"] == "tool_calls"
+    # hybrid channel: planner JSON contract + real client commands
+    assert "[[ASTRBOT TOOL PLANNER]]" in seen[0].prompt
+    assert "已经真实注册为本客户端的命令" in seen[0].prompt
+    assert "get_weather" in seen[0].prompt
+    assert '{"tool":"工具名","arguments":{...}}' in seen[0].prompt
 
 
 def test_emulated_tool_call_stream(client, auth, monkeypatch):
@@ -354,6 +375,27 @@ def test_build_tool_prompt_uses_the_flat_planner():
     assert "【回复风格】" in ab.prompt
     assert ab.turns == [("user", "东京天气怎么样？")]
     assert "[[ASTRBOT TOOL PLANNER CONTINUE]]" in ab.followup_prompt
+
+
+def test_build_tool_prompt_native_flag_lists_real_commands():
+    tools = [{"type": "function", "function": {
+        "name": "get_weather", "description": "weather",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+    ab = astrbot.build_tool_prompt(
+        [{"role": "system", "content": PERSONA},
+         {"role": "user", "content": "东京天气怎么样？"}],
+        tools, native=True,
+    )
+    assert "[[ASTRBOT TOOL PLANNER]]" in ab.prompt
+    assert "已经真实注册为本客户端的命令" in ab.prompt
+    assert "绝对不要说" in ab.prompt
+    assert ab.system_prompt == PERSONA.strip()
+    assert "[[ASTRBOT TOOL PLANNER CONTINUE]]" in ab.followup_prompt
+    assert "已经真实注册" in ab.followup_prompt
+    # planner (native=False) must not contain the real-tool line
+    ab2 = astrbot.build_tool_prompt(
+        [{"role": "user", "content": "东京天气怎么样？"}], tools)
+    assert "已经真实注册" not in ab2.prompt
 
 
 def test_refused_tool_call_is_retried_on_a_fresh_thread(client, auth, monkeypatch):

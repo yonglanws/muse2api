@@ -243,7 +243,14 @@ def is_tool_continuation(messages: list[dict[str, Any]]) -> bool:
 _TOOL_REFUSAL_RE = re.compile(
     r"(没有接入|没有(?:真正)?(?:可用|实际)?的?工具|无法调用|不能调用|"
     r"工具定义(?:只是|跟着|是文字)|不是我(?:真正)?能调用|"
-    r"查不了|做不了|不能(?:帮你)?(?:查|执行))",
+    r"查不了|查不到|做不了|不能(?:帮你)?(?:查|执行)|"
+    r"没有[^。！？!?\n]{0,40}?(?:工具|命令)[^。！？!?\n]{0,12}"
+    r"(?:可以用|可调用|可用|被?注册|被?声明|匹配)|"
+    r"没有[^。！？!?\n]{0,40}?`[^`]+`[^。！？!?\n]{0,20}?(?:工具|命令)|"
+    r"(?:命令|工具)没有(?:真的|被|真正)?(?:注册|声明|匹配)|没有真的给我注册|"
+    r"没有(?:真的|被|真正)?声明[^。！？!?\n]{0,12}(?:命令|工具)|"
+    r"没有\s*`[^`]+`\s*(?:这个|这样的?)(?:工具|命令)|"
+    r"capabilities_not_declared)",
     re.IGNORECASE,
 )
 _PERSONA_REFUSAL_RE = re.compile(
@@ -590,6 +597,7 @@ def build_tool_prompt(
     max_prompt_chars: int = 14000,
     force_tool: bool = False,
     retry: bool = False,
+    native: bool = False,
 ) -> AstrBotPrompt:
     """A flat JSON planner prompt.
 
@@ -598,6 +606,11 @@ def build_tool_prompt(
     (``{"tool": ..., "arguments": ...}`` or ``{"tool": "NONE", "reply": ...}``)
     is treated as a form to fill in and is much more reliable.  The proxy wraps
     the result into the real OpenAI ``tool_calls`` shape.
+
+    With ``native`` the tools are ALSO registered as real client commands
+    (``client.register_capabilities``), so the model may either call the
+    command through its own ``client.invoke`` loop (captured and re-encoded by
+    the driver) or answer with the planner JSON — both produce ``tool_calls``.
     """
     system_prompt, history, current_msg, tool_cont, turns = _split_request(messages)
     current_text, meta, images = ("", {}, [])
@@ -609,6 +622,11 @@ def build_tool_prompt(
     style = style_persona(system_prompt) if system_prompt else \
         "说话自然、简短，用第一人称，语气友好。"
     tool_lines = _tool_specs(tools, compact=True)
+    native_line = (
+        "【真实工具】以上工具已经真实注册为本客户端的命令，也可以像调用普通工具那样"
+        "直接真实调用（系统会把执行结果返回给你）。无论选择哪种方式，都绝对不要说"
+        "“没有这个工具”“工具没有注册”“无法调用”。"
+        "如果真实调用了某个命令，就不要再输出 JSON。") if native else ""
     history_text = _history_transcript(
         history, max_chars=max(1200, max_prompt_chars - 4500))
     results = [_content_to_text(m.get("content")) for m in messages
@@ -616,10 +634,12 @@ def build_tool_prompt(
 
     sections = [
         "[[ASTRBOT TOOL PLANNER RETRY]]" if retry else "[[ASTRBOT TOOL PLANNER]]",
-        "这是一道信息提取题，不要执行任何真实操作，也不要说自己有没有工具。"
+        "这是一道信息提取题，不要说自己有没有工具。"
         "请根据下面的对话填写一个扁平 JSON。",
         f"【可用工具】\n{tool_lines}",
     ]
+    if native_line:
+        sections.append(native_line)
     if retry:
         sections.append("【注意】上一轮没有按格式输出。这一次必须只输出一个扁平 JSON 对象，"
                         "不要解释，不要拒绝。")
@@ -655,6 +675,8 @@ def build_tool_prompt(
     if tool_cont:
         follow.append("【工具结果】\n" + "\n\n".join(r for r in results if r))
     follow.append(f"【可用工具】\n{tool_lines}")
+    if native_line:
+        follow.append(native_line)
     follow.append(f"【回复风格】\n{style[:600]}")
     follow.append(
         "【任务】需要工具时只输出 {\"tool\":\"工具名\",\"arguments\":{...}}；"

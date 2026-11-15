@@ -1,9 +1,9 @@
 # AstrBot 适配测试报告
 
-- 日期：2026-11-15
-- 版本：muse2api 0.5.0（原生协议驱动 + AstrBot 适配层）
+- 日期：2026-11-16（0.5.1 更新）
+- 版本：muse2api 0.5.1（原生协议驱动 + 原生客户端工具通道 + AstrBot 适配层）
 - 本地环境：Windows，AstrBot Desktop 4.29.4（`D:\AstrBot`），Python 3.12
-- 服务器环境：192.168.31.54，Docker，`muse2api-web:protocol-0.5.0`（原浏览器镜像 `muse2api-web:astrbot-0.4.1` 保留回滚）
+- 服务器环境：192.168.31.54，Docker，`muse2api-web:protocol-0.5.1`（原浏览器镜像 `muse2api-web:astrbot-0.4.1` 保留回滚）
 - 账号：Muse 账号「慵懒午睡」（唯一账号）
 - 上游：muse.ai（Meta 的个人 AI Agent，不是普通 LLM）
 
@@ -19,9 +19,23 @@
 | Agent / 工具调用 | ✅ 通过 | 扁平 JSON Planner → 标准 OpenAI `tool_calls`；工具结果续接、流式工具调用均验证 |
 | AstrBot（QQ）亲和性 | ✅ 通过 | `x-astrbot-conversation-id`、昵称替换、热线程复用、Persona、工具循环、SSE 均验证 |
 | 会话续期（keepalive） | ✅ 通过 | 修复 `httpx` 不走代理导致的 ConnectError；`/admin/accounts/{id}/renew` 返回 VM `RUNNING` |
-| 回归测试 | ✅ 通过 | `pytest` 214 passed；`ruff check src tests` 通过 |
+| 回归测试 | ✅ 通过 | `pytest` 219 passed；`ruff check src tests` 通过 |
 | 普通 OpenAI 客户端 | ✅ 通过 | 不带 AstrBot 头的非流式/流式请求行为不变；带 system 消息时自动走 Persona bridge |
 | 纯协议驱动（Noise） | ✅ 通过 | 逐字流、线程隔离/续接、图片/视频、工具调用均实测 |
+
+## 1.1 0.5.1 新增验证（2026-11-16）
+
+逆向并接入原生客户端工具通道后，全部在生产容器（`muse2api-web:protocol-0.5.1`，18610）复测：
+
+| 项目 | 结果 |
+|---|---|
+| 非流式原生 tool_calls | ✅ 3/3，`finish=tool_calls`，参数 `{"group_id":"123456","user_id":"789"}`（3.9–7.3s） |
+| 流式原生 tool_calls | ✅ 3/3，`delta.tool_calls` + `finish_reason=tool_calls` |
+| 工具结果续接 | ✅ 3/3，正确引用工具返回值（2.3–4.4s） |
+| Persona 回归 | ✅ 3/3，角色身份稳定 |
+| 会话隔离 A/B | ✅ 会话 B 对会话 A 的暗号明确回答“不知道” |
+| 真实 AstrBot Provider（0.5.1 生产） | ✅ persona/tool/continuation/stream 全部通过 |
+| 协议逆向验证 | ✅ `hidden_prompt` 不能覆盖身份；Shared Agents `/shared-agents/capabilities` 服务端 404（已下线）；`GET /model` 可用（当前账号仅 `auto/auto`）；`/MEMORY.md` 为账号记忆文件且每轮会话开头被读取——记忆只被隔离、从不写入 |
 
 ## 2. 复现步骤
 
@@ -110,7 +124,7 @@ POST /admin/accounts/acc_.../renew
 
 ### 2.4 纯协议驱动实测（0.5.0）
 
-隔离测试容器 `muse2api-protocol-test`（18611，`MUSE2API_DRIVER=protocol`，镜像 `muse2api-web:protocol-0.5.0`）：
+隔离测试容器 `muse2api-protocol-test`（18611，`MUSE2API_DRIVER=protocol`，镜像 `muse2api-web:protocol-0.5.1`）：
 
 | 用例 | 结果 |
 |---|---|

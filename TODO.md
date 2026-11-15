@@ -18,7 +18,7 @@ Priorities: **P0** must be done first · **P1** core feature · **P2** better ex
 | A4 | Verify session renewal | P0 | `upstream/muse.py` | | Not started |
 | A5 | Verify the Docker image builds and runs | P1 | `Dockerfile` | | Not started |
 | A6 | Enable GitHub Actions CI | P1 | `.github/workflows/ci.yml` | | Done (workflow file in main) |
-| B1 | Direct protocol driver (Noise + `chat.stream`) | P1 | `drivers/protocol/` | | Done (0.5.0; live-tested) |
+| B1 | Direct protocol driver (Noise + `chat.stream`) | P1 | `drivers/protocol/` | | Done (0.5.0; native client-tool channel added 0.5.1; live-tested) |
 | B2 | Reuse conversation threads to cut first-token latency | P2 | `drivers/browser/` | | Done |
 | B3 | Quota lookup | P2 | `MuseDriver.quota` | | Partial (mock and browser driver done; http driver and quota-aware scheduling open) |
 | C1 | `/v1/responses` endpoint | P1 | `api/routes/responses.py` | | Done (local; verified with the official OpenAI SDK streaming + non-streaming against the mock driver; real-account check pending) |
@@ -222,3 +222,4 @@ anonymous requests used to latch onto each other's threads.
   - `MUSE2API_UPSTREAM_PROXY` fixes session renewal when muse.ai is only reachable through the browser proxy.
   - 31 tests in `tests/test_astrbot_compat.py`; live-tested with AstrBot 4.29.4's provider and a Docker deployment. See `docs/ASTRBOT.md` and `docs/ASTRBOT-TEST-REPORT.md`.
   - **0.5.0**: the recommended transport is `MUSE2API_DRIVER=protocol` (Noise/`chat.stream`), which gives real token deltas, thread-scoped subscriptions and image/video resources without Chromium. Ordinary OpenAI clients with a `system` message now use the same persona bridge. Tool arguments are coerced to the tool schema (string ids stay strings).
+- **0.5.1**: reverse-engineered the native client tool channel (`client.register_capabilities` / `client.invoke` / `client.invoke-result`, `ui.navigate.*` namespace, stable `node_id` + `linked_nodes`); OpenAI tools are registered as real Muse commands and native invocations are re-encoded into standard `tool_calls`, with the flat JSON planner kept as the guaranteed fallback (`MUSE2API_TOOL_CHANNEL`). Verified that `hidden_prompt` cannot override identity, Shared Agents (`instructions`) are retired server-side, and `/MEMORY.md` is the account memory file read at every conversation start — session isolation keeps conversations from using it.

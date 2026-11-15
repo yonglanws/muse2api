@@ -7,7 +7,7 @@ muse.ai 是一个**网页 Agent**，不是普通的指令跟随 LLM。它的网�
 - OpenAI `tools` 被忽略，AstrBot 的函数调用无法工作；
 - 账号主人叫「小红」时，所有 QQ 用户都可能被叫成「小红」。
 
-0.4.1 增加了一层 AstrBot 适配，专门解决这些问题。0.5.0 又把传输层换成了原生 Noise/`chat.stream` 协议（`MUSE2API_DRIVER=protocol`），逐字流、线程隔离和图片/视频都更接近真实 API。本文说明适配层的行为、配置和限制；协议细节见 [PROTOCOL.md](PROTOCOL.md)。
+0.4.1 增加了一层 AstrBot 适配，专门解决这些问题。0.5.0 把传输层换成了原生 Noise/`chat.stream` 协议（`MUSE2API_DRIVER=protocol`），逐字流、线程隔离和图片/视频都更接近真实 API；0.5.1 又逆向接入了 Muse 的原生客户端工具通道（工具会被真实注册，Muse 通过自己的工具循环调用）。本文说明适配层的行为、配置和限制；协议细节见 [PROTOCOL.md](PROTOCOL.md)。
 
 ## 1. 开启方式
 
@@ -76,9 +76,17 @@ AstrBot 的 `system_prompt` 会被放到**当前用户消息**里，以「角色
 - 每个账号最多 `MUSE2API_ACCOUNT_MAX_CONCURRENCY` 个 tab；tab 不够时按 **LRU** 淘汰最久未用的会话，而不是淘汰最早创建的会话。
 - 工具调用/工具结果的往返会通过同一个 conversation id 续接，工具结果不会串到别的用户。
 
-## 5. 工具调用（模拟）
+## 5. 工具调用（0.5.1：原生客户端工具 + JSON Planner 兜底）
 
-muse.ai 不能执行 AstrBot 的函数，但它可以完成**信息提取**。适配层把工具调用变成一道扁平的 JSON 填空题：
+0.5.1 逆向出了 Muse 的**原生客户端工具通道**并默认启用（`MUSE2API_TOOL_CHANNEL=auto`）：
+
+1. 带 `tools` 的请求会把每个 OpenAI 工具注册成真实的 Muse 客户端命令（`client.register_capabilities`，命名空间 `ui.navigate.<工具名>`，含参数 schema 和 30s 超时）；
+2. Muse 在自己的工具循环里**真实调用**它们，网关收到 `client.invoke` 事件，捕获 `{tool, arguments}` 后立即应答，避免命令超时；
+3. 捕获的原生调用被重编码为标准 OpenAI `tool_calls` 输出，参数仍按 JSON Schema 归一化；
+4. 提示词保留扁平 JSON Planner 作为保底输出契约（并明确告知“这些工具已真实注册，禁止说没有这个工具”）；Muse 走哪条路都产出标准 `tool_calls`；
+5. Muse 偶尔说「我没有这个工具/命令未注册/查不到」时，拒绝检测会触发更严格的 planner 重试（默认 2 次，新线程）。
+
+Planner 输出格式（兜底路径，行为与 0.5.0 一致）：
 
 ```json
 {"tool":"get_group_member_info","arguments":{"group_id":"123456","user_id":"789"}}
@@ -90,7 +98,7 @@ muse.ai 不能执行 AstrBot 的函数，但它可以完成**信息提取**。�
 {"tool":"NONE","reply":"给用户的正常回复"}
 ```
 
-网关解析后转换成标准 OpenAI `tool_calls`：
+网关统一转换成标准 OpenAI `tool_calls`：
 
 ```json
 {
@@ -103,10 +111,10 @@ muse.ai 不能执行 AstrBot 的函数，但它可以完成**信息提取**。�
 `finish_reason` 为 `tool_calls`；AstrBot 执行工具后，把 `assistant(tool_calls)` + `tool` 结果发回来，网关会：
 
 - 识别这是工具结果续接，继续同一个 thread；
-- 让模型输出 `{"tool":"NONE","reply":"..."}` 或下一次调用；
-- 把最终 `reply` 清洗成角色回复。
+- 让模型基于工具结果回复，或再次调用工具（原生通道支持多轮真实调用）；
+- 把最终回复清洗成角色回复。
 
-工具拒绝（muse.ai 说「我没有这个工具」）或 JSON 格式错误时，会用更严格的 planner 提示在**新线程**重试，默认重试 2 次。流式请求同样支持，工具调用会以标准 `delta.tool_calls` 返回。
+流式请求同样支持，工具调用会以标准 `delta.tool_calls` 返回。`MUSE2API_TOOL_CHANNEL=planner` 可退回纯 Planner（不注册原生命令）。
 
 ## 6. 已知限制
 
@@ -115,7 +123,7 @@ muse.ai 不能执行 AstrBot 的函数，但它可以完成**信息提取**。�
   - 拒绝把「暗号」写入长期记忆；
   - 用「我不会真的冒充她」这类出戏句子开头。
   适配层会尽量清洗/重试，但不能保证 100% 与原生 API 一致。
-- 工具调用依赖模型遵循扁平 JSON 格式；极少数情况下会连续拒绝，重试耗尽后会返回模型原文（已清洗），AstrBot 会把它当普通回复。
+- 工具调用优先走原生客户端命令（真实注册），JSON Planner 是保底；极少数情况下连续拒绝、重试耗尽后会返回模型原文（已清洗），AstrBot 会把它当普通回复。
 - 工具参数会按 Tool JSON Schema 归一化（例如 `group_id` 的 schema 是 string 而上游给数字，会转成字符串）。
 - 图片会作为附件发给 muse.ai；历史图片不会再重复上传，只保留 `[用户附带图片]` 占位。
 - 账号主人自己的昵称/记忆是账号级的；适配层做昵称替换并在提示词层禁止长期记忆读写，但不能从协议层删除账号记忆。
