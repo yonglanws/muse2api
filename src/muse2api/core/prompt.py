@@ -61,7 +61,7 @@ def message_turns(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
 def _continuity_turns(turns: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Turns that matter for "is this the same conversation?".
 
-    System prompts are re-sent every request (AstrBot's includes the current
+    System prompts are re-sent every request (some clients include the current
     time) and tool plumbing is not shown as a chat bubble, so neither may make
     the proxy open a fresh thread. Empty assistant turns are dropped too.
     """

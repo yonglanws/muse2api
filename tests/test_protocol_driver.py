@@ -166,14 +166,14 @@ async def test_protocol_threads_are_isolated_per_hint():
     assert client.calls[0]["session_id"] != client.calls[1]["session_id"]
 
 
-async def test_protocol_persona_change_starts_a_new_thread():
+async def test_protocol_system_prompt_change_starts_a_new_thread():
     driver, client = _driver_with_fake()
     account = Account(id="acc_test")
     await anext(driver.chat_stream(account, _chat(
-        "one", [("user", "one")], persona_fingerprint="p1")))
+        "one", [("user", "one")], system_fingerprint="p1")))
     await anext(driver.chat_stream(account, _chat(
         "full", [("user", "one"), ("assistant", "reply:one"), ("user", "two")],
-        persona_fingerprint="p2")))
+        system_fingerprint="p2")))
     assert client.calls[0]["session_id"] != client.calls[1]["session_id"]
 
 

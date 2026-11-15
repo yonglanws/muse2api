@@ -33,7 +33,7 @@ flowchart TB
         core_models["models.py<br/>模型注册 · 别名"]
         core_prompt["prompt.py<br/>messages → prompt"]
         core_media["media.py · matting.py<br/>媒体存储 · 抠图"]
-        core_compat["astrbot.py<br/>客户端兼容层"]
+        core_compat["system_prompt.py · tool_plan.py<br/>system 提示词与工具调用"]
     end
 
     subgraph drivers["drivers/ — 唯一接触 muse.ai 的层"]
@@ -58,7 +58,7 @@ flowchart TB
 ## 一次聊天请求的生命周期
 
 1. `routes/chat.py` 校验请求，`resolve_model` 解析模型别名，`flatten_messages` 把多轮对话合并成一条提示词并提取图片。
-2. 如果请求带 `system` 提示词或 Agent 客户端特征，`core/astrbot.py` 会把 Persona 放入当前用户轮，并生成会话键。
+2. 如果请求带 `system` / `developer` 消息，`core/system_prompt.py` 会把它们整理成前置指令块，并生成指令指纹。
 3. `Gateway.chat_stream` 通过 `AccountPool.lease()` 租用一个账号（受调度策略和单账号并发限制约束）。
 4. 调用 `driver.chat_stream(account, ChatRequest)`，接收文本增量。
 5. 出错时：
@@ -95,8 +95,7 @@ class MuseDriver(ABC):
 - 每个会话对应一个 `session_id`，线程订阅只接收该线程的事件，因此不同用户的上下文在协议层就是隔离的。
 - `delta.text_append` 直接映射为 OpenAI `delta.content`，是真正的逐字流，不依赖 DOM 轮询。
 - 连接按账号复用；空闲线程超过 `MUSE2API_PROTOCOL_THREAD_TTL` 后回收，超过 `MUSE2API_PROTOCOL_MAX_THREADS` 时关闭最旧的空闲线程。
-- 原生系统提示词：`drivers/protocol/profile.py` 通过 `fs.write` 维护 `IDENTITY.md` / `SOUL.md` / `USER.md` / `AGENTS.md`，按指纹幂等，并在首次修改前备份。
-- 原生工具通道：`register_capabilities` 声明 `ui.navigate.*` 命令，`client.invoke` 事件被重编码为标准 OpenAI `tool_calls`。
+- 工具通道：`register_capabilities` 声明 `ui.navigate.*` 命令，`client.invoke` 事件被重编码为标准 OpenAI `tool_calls`。
 
 ## 浏览器驱动要点
 

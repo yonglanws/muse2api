@@ -23,7 +23,7 @@
 | B3 | 额度查询与按额度调度 | P2 | `MuseDriver.quota` | | 🚧 部分完成（浏览器驱动已接入；协议驱动与调度未接入） |
 | C1 | `/v1/responses` | P1 | `api/routes/responses.py` | | ✅ 已完成（官方 SDK 流式 / 非流式验证） |
 | C2 | `/v1/images/edits` | P1 | `api/routes/images.py` | | ✅ 已完成（不支持 `mask`） |
-| C3 | 工具调用 | P2 | `core/astrbot.py` | | ✅ 已完成（原生通道 + Planner 兜底） |
+| C3 | 工具调用 | P2 | `core/tool_plan.py` · `core/system_prompt.py` | | ✅ 已完成（原生通道 + Planner 兜底） |
 | C4 | 流式心跳，避免客户端超时 | P2 | `api/routes/chat.py` | | ✅ 已完成 |
 | D1 | 支持更多 Cookie 导入格式 | P1 | `api/routes/admin.py` | | ✅ 已完成 |
 | D2 | Cookie 导入浏览器插件 | P2 | `web/extension/` | | ✅ 已完成 |
@@ -35,10 +35,9 @@
 | F1 | 默认无状态聊天 | P2 | `drivers/browser/driver.py` | | ✅ 已完成 |
 | F2 | 显式 `user` 时复用会话 | P2 | `drivers/browser/driver.py` | | ✅ 已完成 |
 | F3 | 多用户隔离与并发指引 | P3 | `api/deps.py` · docs | | ✅ 已完成 |
-| G1 | Agent 客户端兼容层 | P1 | `core/astrbot.py` · `api/routes/chat.py` | | ✅ 已完成（0.4.1，0.5.0 扩展） |
-| G2 | 原生 system 提示词栈 | P1 | `drivers/protocol/profile.py` | | ✅ 已完成（0.5.2） |
-| G3 | 原生客户端工具通道 | P1 | `drivers/protocol/` | | ✅ 已完成（0.5.1） |
-| G4 | 中文控制台与项目文档 | P2 | `web/` · `docs/` | | ✅ 已完成（0.5.3） |
+| G1 | 原生客户端工具通道 | P1 | `drivers/protocol/` | | ✅ 已完成（0.5.1） |
+| G2 | 中文控制台与项目文档 | P2 | `web/` · `docs/` | | ✅ 已完成（0.5.3） |
+| G3 | 纯网页反代重构 | P1 | `api/routes/chat.py` · `core/` | | ✅ 已完成（0.6.0） |
 
 ---
 
@@ -84,12 +83,11 @@
 | 0.4.1 | 通用客户端兼容层：Persona bridge、会话隔离、工具 Planner、回复清洗 |
 | 0.5.0 | 原生 Noise / `chat.stream` 协议驱动；逐字流、线程隔离、图片与视频 |
 | 0.5.1 | 原生客户端工具通道：`register_capabilities` / `client.invoke` → 标准 `tool_calls` |
-| 0.5.2 | 原生 system 提示词栈（IDENTITY / SOUL / USER / AGENTS.md） |
-| 0.5.3 | 通用 muse.ai 网页反代定位；中文文档体系；全新中文控制台；作者与致谢更新 |
+| 0.5.3 | 通用 muse.ai 网页反代定位；中文文档体系；全新中文控制台 |
+| 0.6.0 | 移除平台专用兼容层；纯 OpenAI 协议反代；通用 system 提示词桥接 |
 
 详细记录：
 
 - [docs/PROTOCOL.md](docs/PROTOCOL.md)：协议、线程、系统提示词栈、工具通道
 - [docs/CLIENTS.md](docs/CLIENTS.md)：客户端兼容层
-- [docs/CLIENT-TEST-REPORT.md](docs/CLIENT-TEST-REPORT.md)：真实客户端与生产验证
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：分层设计

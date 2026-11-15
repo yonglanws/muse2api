@@ -2,15 +2,15 @@
 
 > muse.ai 是住在网页里的 Agent。muse2api 在它外面加了一层标准接口，让任何 OpenAI 客户端都能把它当作模型使用。
 
-muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/completions`、`/v1/images/generations`、`/v1/videos` 这些熟悉的 OpenAI 接口，对内通过原生 Noise 协议连接 muse.ai 的网页 Agent。它不模拟网页点击，也不把提示词简单拼在聊天框里，而是直接使用 muse.ai 自己的会话、线程、指令文件和客户端工具通道。
+muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/completions`、`/v1/images/generations`、`/v1/videos` 这些熟悉的 OpenAI 接口，对内通过原生 Noise 协议连接 muse.ai 的网页 Agent。它不模拟网页点击，也不把提示词简单拼在聊天框里，而是直接使用 muse.ai 自己的会话、线程和客户端工具通道。
 
-这一版是 **0.5.3**。
+这一版是 **0.6.0**。
 
 ## 先说结论
 
 - **一个地址就能接入**：把 `base_url` 指向 `http://<host>:18610/v1`，OpenAI SDK、LobeChat、Cherry Studio 或自研 Agent 都能用。
 - **不需要 Chromium**：推荐 `MUSE2API_DRIVER=protocol`，直接用 Noise + `chat.stream` 通信，镜像约 194 MB。
-- **角色设定真的生效**：不只是把 system prompt 塞进用户消息，还会维护 muse.ai 每次会话都会读取的四个 VM 指令文件。
+- **系统提示词生效**：`system` / `developer` 消息会被整理成独立指令块，再和当前用户消息一起发送。
 - **工具调用真的执行**：OpenAI `tools` 会被注册成 muse.ai 的原生客户端命令，Agent 在自己的工具循环里调用，再还原成标准 `tool_calls`。
 - **多账号、多会话**：账号池负责调度、冷却、故障转移；会话按 API Key 隔离，热线程复用降低首字延迟。
 - **图片和视频**：文生图、参考图、异步任务、文生视频、透明背景抠图都在同一个网关里。
@@ -83,7 +83,7 @@ OpenAI 客户端
 └──────────────┘                                           │
      │  Noise XX + protobuf + chat.stream                   │
      ▼                                                      ▼
-muse.ai 网页 Agent  ──  四份指令文件 · 线程 · 客户端工具  ──  图片 / 视频
+muse.ai 网页 Agent  ──  系统指令 · 线程 · 客户端工具  ──  图片 / 视频
 ```
 
 一次聊天请求会经历这些步骤：
@@ -94,29 +94,17 @@ muse.ai 网页 Agent  ──  四份指令文件 · 线程 · 客户端工具  �
 4. 出错时按类型更新账号状态，在尚未向客户端发送内容前自动换号重试；
 5. 流式请求先拿到第一个 chunk 再返回 200，避免“中途断流”。
 
-## 角色与系统提示词
+## 系统提示词
 
-muse.ai 的 harness 会在**每次会话开始**读取 VM 根目录下的四个 Markdown 文件：
+muse.ai 的 `chat.stream` 没有独立的 `system` 角色，所有文本最终都是一条用户消息。网关在入口保留 OpenAI 语义：
 
-| 文件 | 作用 |
-|---|---|
-| `IDENTITY.md` | 名字、角色、气质、Emoji；服务端 `GET /identity` 会重新解析 |
-| `SOUL.md` | 价值观与行为准则 |
-| `USER.md` | 关于“正在和谁说话”的备注；Muse 会遵循里面写的内容 |
-| `AGENTS.md` | 长期有效的操作约定 |
+- `system` / `developer` 消息被收集成一个指令块，放在提示词最前面；
+- 当前用户消息单独留在最后，指令和问题不会混在一起；
+- 同一 `user` 的后续请求只发送新的用户轮，前面的系统指令和历史已经在线程里；
+- `system` 内容变化时，指令指纹变化，驱动会开一个新线程，避免新旧指令混用；
+- 网关**不修改** muse.ai 账号里的任何文件，也不修改回复内容；它只做协议转换。
 
-网关通过 `POST /fs/write` 写入这些文件（body 需要 `path`、`data_base64`、`overwrite`、`append`、`create_parent`），用 `POST /fs/read` 读回校验。
-
-设置 `MUSE2API_NATIVE_PROFILE=chameleon` 后，四份文件会被维护成“变色龙”基线：账号身份不写死，服从每个会话开头给出的角色设定；`USER.md` 明确要求不要把账号主人的昵称带给其他会话的人；`AGENTS.md` 提醒 Muse 把网关注册的命令当成真实工具。首次修改前会备份原始文件到 `data/native_profile_backup/<账号>/`。
-
-> **边界**：文件内容会作为 Muse 自己的笔记进入上下文。身份、价值观、用户备注和操作约定会被采纳；与文件用途无关的隐藏行为规则会被模型拒绝。网关只用它做“身份 / 边界 / 约定”，不把它当作任意 prompt 注入器。
-
-`MEMORY.md` 是账号级长期记忆，网关**永远不会写入它**。需要恢复原始文件时：
-
-```bash
-GET  /admin/native-profile/{account_id}
-POST /admin/native-profile/{account_id}/reset
-```
+过长的系统指令会按 `MUSE2API_MAX_PROMPT_CHARS` 截断，优先保留末尾的对话与任务说明。
 
 ## 工具调用
 
@@ -165,7 +153,6 @@ muse.ai 网页端有一套客户端工具协议。网关把它接成了标准 Op
 | POST | `/admin/accounts/import` | 批量导入，逐条返回结果 |
 | POST | `/admin/accounts/{id}/renew` · `/reset` | 续期 / 重置 |
 | GET | `/admin/accounts/{id}/quota[?refresh=1]` | 额度快照 |
-| GET/POST | `/admin/native-profile/{id}[/reset]` | 原生指令文件状态 / 恢复 |
 | GET/POST/PATCH/DELETE | `/admin/keys[/{id}]` | API Key 管理 |
 | GET | `/admin/requests` · `/admin/stats` | 请求日志与聚合 |
 | GET | `/admin/status` · `/admin/tasks` | 服务状态 / 任务列表 |
@@ -215,9 +202,9 @@ curl http://localhost:18610/v1/videos \
 | `MUSE2API_WARM_THREADS` | `2` | 浏览器驱动预热线程数 |
 | `MUSE2API_MAX_FAILOVER` | `2` | 换账号重试次数 |
 | `MUSE2API_ACCOUNT_COOLDOWN` | `120` | 错误后的冷却秒数 |
-| `MUSE2API_NATIVE_PROFILE` | `off` | `chameleon` 启用原生四文件栈 |
-| `MUSE2API_NATIVE_PROFILE_DIR` | 空 | 自定义四文件目录 |
 | `MUSE2API_TOOL_CHANNEL` | `auto` | `auto` / `native` / `planner` |
+| `MUSE2API_MAX_PROMPT_CHARS` | `18000` | 系统指令与历史的最大长度 |
+| `MUSE2API_TOOL_RETRIES` | `2` | Planner 被拒绝时的重试次数 |
 | `MUSE2API_EMULATE_TOOLS` | `true` | 是否启用工具调用 |
 | `MUSE2API_KEEPALIVE_ENABLED` | `true` | 后台续期与 VM 唤醒 |
 | `MUSE2API_KEEPALIVE_INTERVAL` | `600` | 保活间隔（秒） |
@@ -234,7 +221,6 @@ MUSE2API_DRIVER=protocol
 MUSE2API_UPSTREAM_PROXY=http://<proxy>:7893
 MUSE2API_ACCOUNT_MAX_CONCURRENCY=4
 MUSE2API_KEEPALIVE_ENABLED=true
-MUSE2API_NATIVE_PROFILE=chameleon
 MUSE2API_TOOL_CHANNEL=auto
 ```
 
@@ -254,7 +240,6 @@ docker run -d --name muse2api \
   -v /path/to/data:/app/data \
   -e MUSE2API_DRIVER=protocol \
   -e MUSE2API_UPSTREAM_PROXY=http://<proxy>:7893 \
-  -e MUSE2API_NATIVE_PROFILE=chameleon \
   muse2api:latest
 ```
 
@@ -262,10 +247,10 @@ docker run -d --name muse2api \
 
 - 关闭响应缓冲，确保 SSE 逐字输出；
 - 读取超时 ≥ 300 秒，视频任务建议 600 秒；
-- 保留 `Authorization` 与会话请求头；
+- 保留 `Authorization` 请求头；
 - 如果反向代理有约 100 秒的限制，图片生成请使用 `async` 任务。
 
-数据都在 `data/`：`accounts.json`、`keys.json`、`requests.db`、`media/`、`native_profile_backup/`。升级前备份这个目录即可。
+数据都在 `data/`：`accounts.json`、`keys.json`、`requests.db`、`media/`。升级前备份这个目录即可。
 
 ## 控制台
 
@@ -275,9 +260,9 @@ docker run -d --name muse2api \
 
 ## 它不擅长什么
 
-1. muse.ai 是 Agent，不是可完全控制的 LLM。它仍可能拒绝某些角色、拒绝写入长期记忆，或用出戏句子开头。
+1. muse.ai 是 Agent，不是可完全控制的 LLM；它仍可能拒绝某些请求，或输出与普通 LLM 不同的结果。
 2. 工具调用优先走原生通道，Planner 是兜底；连续拒绝、重试耗尽后可能返回普通文本而不是 `tool_calls`。
-3. 账号主人的 `MEMORY.md` 属于账号级，协议层不能删除；网关永不写入它，并在原生 `USER.md` 与每轮提示词里中和昵称外泄。
+3. muse.ai 的账号级记忆仍可能影响新会话；网关按 API Key + `user` 隔离线程，但不能删除上游账号里的记忆。
 4. 历史图片只保留占位符，跨线程依赖完整图片细节时可能丢失。
 5. 多人使用时请增加账号，而不是无限提高单账号并发；一个 muse.ai 账号运行在一台 VM 上。
 
@@ -292,10 +277,9 @@ docker run -d --name muse2api \
 
 更细的文档：
 
-- [docs/PROTOCOL.md](docs/PROTOCOL.md)：Noise 握手、线程、指令文件栈、工具通道
+- [docs/PROTOCOL.md](docs/PROTOCOL.md)：Noise 握手、线程、系统提示词、工具通道
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：分层与请求生命周期
-- [docs/CLIENTS.md](docs/CLIENTS.md)：客户端兼容层
-- [docs/CLIENT-TEST-REPORT.md](docs/CLIENT-TEST-REPORT.md)：真实客户端与生产验证
+- [docs/CLIENTS.md](docs/CLIENTS.md)：OpenAI 客户端接入
 
 ## 许可
 

@@ -39,26 +39,26 @@ class ChatRequest:
     """User/assistant turns of the request, used to continue a hot page instead of
     resending history. System prompts and tool plumbing are excluded."""
     followup_prompt: str | None = None
-    """Text to send when the page already holds this conversation. The route builds
-    a compact version of the prompt for AstrBot; None means send ``prompt``."""
+    """Text to send when the page already holds this conversation. None means
+    send the full ``prompt`` instead."""
     tool_continuation: bool = False
     """The newest message is a tool result, not a new user turn."""
     images_current_only: bool = False
-    """``images`` contains only the newest user turn (AstrBot), so a follow-up must
-    attach all of them instead of slicing off the images already on the page."""
+    """``images`` contains only the newest user turn, so a follow-up must attach
+    all of them instead of slicing off images already on the page."""
     page_echo: str | None = None
     """Short text from the newest user turn as it appears on the muse page; used to
     recognise a live continuation when the thread URL has not updated yet."""
     force_new_thread: bool = False
     """Retry path: never continue the page even when the turns match, so a refused
     reply cannot poison the retry."""
-    persona_fingerprint: str | None = None
-    """Changes when the system prompt (minus dynamic clock text) changes, so a new
-    persona never continues the old identity's page."""
+    system_fingerprint: str | None = None
+    """Changes when the system prompt changes, so a new instruction set never
+    continues a thread created under different instructions."""
     tools: list[dict[str, Any]] | None = None
     """Client tool schemas; the gateway passes them through for prompt building."""
     system_prompt: str | None = None
-    """System/developer text for clients that do not go through the AstrBot bridge."""
+    """System/developer text already folded into the prompt (for logging/tools)."""
     cancel: asyncio.Event | None = None
 
 

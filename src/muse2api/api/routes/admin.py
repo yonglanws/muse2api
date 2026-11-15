@@ -298,27 +298,3 @@ async def list_requests(
 async def stats(window: Literal["1h", "24h", "7d"] = "24h",
                 svc: Services = Depends(get_services)) -> dict:
     return {"now": time.time(), **await svc.requests.stats(window)}
-
-
-# ---- native profile (protocol driver) ----
-def _protocol_driver(svc: Services):
-    from ...drivers.protocol.driver import ProtocolDriver
-    if not isinstance(svc.driver, ProtocolDriver):
-        raise InvalidRequest("native profile requires MUSE2API_DRIVER=protocol")
-    return svc.driver
-
-
-@router.get("/native-profile/{account_id}")
-async def native_profile_status(account_id: str,
-                                svc: Services = Depends(get_services)) -> dict:
-    """Which muse.ai instruction files the gateway manages for this account."""
-    _get(svc, account_id)
-    return await _protocol_driver(svc).native_profile_status(account_id)
-
-
-@router.post("/native-profile/{account_id}/reset")
-async def native_profile_reset(account_id: str,
-                               svc: Services = Depends(get_services)) -> dict:
-    """Restore the instruction files from the backups taken on first apply."""
-    _get(svc, account_id)
-    return await _protocol_driver(svc).native_profile_reset(account_id)

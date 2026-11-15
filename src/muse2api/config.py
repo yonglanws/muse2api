@@ -106,42 +106,16 @@ class Settings(BaseSettings):
     image_timeout: float = 240.0
     video_timeout: float = 600.0
 
-    # --- AstrBot / agent-client compatibility ---
-    astrbot_compat: Literal["auto", "on", "off"] = Field(
-        default="auto",
-        description="'auto' applies the AstrBot prompt/sanitizer layer when the "
-        "x-astrbot-conversation-id header or AstrBot's scene XML is present; "
-        "'on' always applies it; 'off' disables it.",
-    )
-    astrbot_sanitize: bool = Field(
-        default=True,
-        description="Strip muse.ai's out-of-character disclaimers and replace the "
-        "account owner's nickname in replies to AstrBot.",
-    )
-    astrbot_buffer_stream: bool = Field(
-        default=True,
-        description="Buffer an AstrBot streaming reply so disclaimers can be removed "
-        "before the first chunk reaches the client.",
-    )
-    astrbot_aliases: str = Field(
-        default="小红,Xiaohong,小紅",
-        description="Comma-separated nicknames from the account owner's memory that "
-        "must be replaced with the current AstrBot user's nickname.",
-    )
-    astrbot_max_prompt_chars: int = Field(
+    # --- system prompt bridge and OpenAI tools ---
+    max_prompt_chars: int = Field(
         default=18000,
-        description="Upper bound on a transformed AstrBot prompt; older history is "
-        "trimmed first.",
-    )
-    astrbot_persona_sticky: bool = Field(
-        default=False,
-        description="Keep one thread when the persona changes. Off by default: a "
-        "different persona opens a fresh thread so the old identity cannot leak.",
+        description="Upper bound on the prompt built from system messages and history; "
+        "older history is trimmed first.",
     )
     emulate_tools: bool = Field(
         default=True,
-        description="Emulate OpenAI tool calling by asking the model for a JSON call "
-        "intent and parsing it. muse.ai itself never executes client tools.",
+        description="Emulate OpenAI tool calling with a flat JSON planner when the "
+        "native client-command channel is unavailable.",
     )
     tool_channel: Literal["auto", "native", "planner"] = Field(
         default="auto",
@@ -149,28 +123,10 @@ class Settings(BaseSettings):
         "commands (client.register_capabilities) so muse.ai calls them through its "
         "own client.invoke loop; 'planner' uses only the flat JSON planner prompt.",
     )
-    native_profile: Literal["off", "chameleon"] = Field(
-        default="off",
-        description="Maintain muse.ai's native instruction files (IDENTITY.md, "
-        "SOUL.md, USER.md, AGENTS.md — read at the start of every conversation) "
-        "in a 'chameleon' shape: account identity defers to each conversation's "
-        "persona and never calls users by the account owner's nickname. "
-        "MEMORY.md is never written. 'off' leaves the files untouched.",
-    )
-    native_profile_dir: str = Field(
-        default="",
-        description="Optional directory whose identity.md / soul.md / user.md / "
-        "agents.md override the built-in chameleon content wholesale.",
-    )
-    astrbot_tool_retries: int = Field(
+    tool_retries: int = Field(
         default=2,
         description="Retries when muse.ai refuses an emulated tool call instead of "
-        "returning JSON. Each retry uses a fresh thread and a strict exam prompt.",
-    )
-    astrbot_persona_retries: int = Field(
-        default=1,
-        description="Retries when muse.ai refuses the persona (e.g. calls a fictional "
-        "minor unsafe); the retry uses a style-only prompt.",
+        "returning planner JSON. Each retry uses a fresh thread.",
     )
 
     # --- account pool ---

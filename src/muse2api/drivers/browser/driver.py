@@ -94,8 +94,8 @@ class _Tab:
     turns: list[tuple[str, str]] = field(default_factory=list)
     image_count: int = 0
     thread_url: str = ""
-    persona_fp: str | None = None
-    """Fingerprint of the system prompt that owns this page; a new persona opens a
+    system_fp: str | None = None
+    """Fingerprint of the system prompt that owns this page; a new system prompt opens a
     fresh thread instead of inheriting the old identity."""
     page_echo: str = ""
     """Newest user text as shown on the page, for live-continuation probes."""
@@ -320,7 +320,7 @@ class BrowserDriver(MuseDriver):
         tab.turns = []
         tab.image_count = 0
         tab.thread_url = ""
-        tab.persona_fp = None
+        tab.system_fp = None
         tab.page_echo = ""
 
     def _load_hot(self, tab: _Tab, account: Account) -> None:
@@ -337,7 +337,7 @@ class BrowserDriver(MuseDriver):
         tab.turns = turns
         tab.hint = hot.get("hint") or None
         tab.thread_url = str(hot.get("url") or "")
-        tab.persona_fp = hot.get("persona_fp") or None
+        tab.system_fp = hot.get("system_fp") or None
         tab.page_echo = str(hot.get("page_echo") or "")
         try:
             tab.image_count = int(hot.get("image_count") or 0)
@@ -350,14 +350,14 @@ class BrowserDriver(MuseDriver):
         tab.hint = req.conversation_hint
         tab.turns = list(req.turns)
         tab.image_count = len(req.images)
-        tab.persona_fp = req.persona_fingerprint
+        tab.system_fp = req.system_fingerprint
         tab.page_echo = (req.page_echo or "")[:200]
         account.meta["hot_page"] = {
             "hint": req.conversation_hint or "",
             "turns": [list(turn) for turn in req.turns],
             "url": tab.thread_url,
             "image_count": tab.image_count,
-            "persona_fp": req.persona_fingerprint or "",
+            "system_fp": req.system_fingerprint or "",
             "page_echo": tab.page_echo,
         }
 
@@ -549,12 +549,12 @@ class BrowserDriver(MuseDriver):
             # happens to hold one: without an identity there is no way to
             # know it is the same client. It opens a new thread instead and
             # sends the full prompt, which keeps the model in context.
-            persona_ok = (tab.persona_fp or None) == (req.persona_fingerprint or None)
-            same_owner = bool(hint) and (tab.hint or "") == hint and persona_ok
+            system_ok = (tab.system_fp or None) == (req.system_fingerprint or None)
+            same_owner = bool(hint) and (tab.hint or "") == hint and system_ok
             follow = followup_text(tab.turns, req.turns) if tab.turns and same_owner else None
             if (follow is None and req.tool_continuation and tab.turns and same_owner
                     and same_history_prefix(tab.turns, req.turns)):
-                # AstrBot's agent loop sends the tool result back without a new user
+                # A tool continuation sends the tool result back without a new user
                 # turn; the page can still answer it in place.
                 follow = req.followup_prompt or "上一步工具调用的结果已经返回，请继续。"
             enough_images = req.images_current_only or len(req.images) >= tab.image_count

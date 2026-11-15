@@ -55,23 +55,15 @@ def require_api_key(request: Request) -> None:
     _identify(request, key.id, key.name)
 
 
-def astrbot_conversation_id(request: Request) -> str | None:
-    """AstrBot's stable per-chat id, sent as ``x-astrbot-conversation-id``."""
-    value = request.headers.get("x-astrbot-conversation-id")
-    return value.strip() if value and value.strip() else None
-
-
 def conversation_key(request: Request, user: str | None) -> str | None:
-    """The browser driver continues a muse.ai thread only for a non-empty key. Scoping
-    the key by the API key keeps two keys that send the same value apart.
+    """The stable conversation key from the standard OpenAI ``user`` field.
 
-    AstrBot's conversation header wins over ``user``: it is one chat session, while
-    ``user`` may be shared by every member of a group.
+    Scoping it by the API key keeps two keys that send the same value apart.
+    A request without ``user`` is stateless and never continues a thread.
     """
-    raw = astrbot_conversation_id(request) or user
-    if not raw:
+    if not user:
         return None
-    return f"{getattr(request.state, 'key_id', '')}:{raw}"
+    return f"{getattr(request.state, 'key_id', '')}:{user}"
 
 
 def require_admin_key(request: Request) -> None:
