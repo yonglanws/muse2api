@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muse2api"
-version = "0.4.1"
+version = "0.5.0"
 description = "OpenAI-compatible gateway for muse.ai with pluggable upstream drivers"
 readme = "README.md"
 license = { text = "MIT" }
@@ -16,7 +16,10 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
     "httpx[socks]>=0.27",
-    "websockets>=13.0",
+    "websockets>=15.0",
+    "cryptography>=42",
+    "protobuf>=7.35.1,<8",
+    "python-socks[asyncio]>=2.6",
     "python-multipart>=0.0.9",
 ]
 
@@ -55,3 +58,6 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "ASYNC"]
 ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/muse2api/drivers/protocol/hatch_pb2.py" = ["UP009", "I001"]

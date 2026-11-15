@@ -27,6 +27,16 @@ _EXT_BY_MIME = {
     "video/quicktime": ".mov",
 }
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_\-]+\.[A-Za-z0-9]+$")
+_MIME_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+}
 
 
 class MediaStore:
@@ -71,7 +81,9 @@ class MediaStore:
 
     @staticmethod
     def mime_of(name: str) -> str:
-        return mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return (_MIME_BY_EXT.get(Path(name).suffix.lower())
+                or mimetypes.guess_type(name)[0]
+                or "application/octet-stream")
 
 
 _MAX_FETCH_BYTES = 20 * 1024 * 1024  # 20 MiB cap on server-side image fetches

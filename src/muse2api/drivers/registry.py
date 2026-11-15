@@ -19,4 +19,8 @@ def create_driver(settings: Settings) -> MuseDriver:
         from .http.driver import HttpDriver
 
         return HttpDriver(settings)
+    if settings.driver == "protocol":
+        from .protocol.driver import ProtocolDriver
+
+        return ProtocolDriver(settings)
     raise ValueError(f"unknown driver: {settings.driver}")

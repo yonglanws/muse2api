@@ -38,7 +38,7 @@ muse2api turns muse.ai's chat, text-to-image and text-to-video features into sta
 
 The project focuses on **clean engineering and easy collaboration**:
 
-- **Pluggable drivers**: how we reach upstream is abstracted behind a `MuseDriver` interface. There are currently a mock driver and a browser (CDP) driver, plus a reserved slot for a direct-protocol (HTTP) driver. They are fully independent of each other.
+- **Pluggable drivers**: how we reach upstream is abstracted behind a `MuseDriver` interface. There is a mock driver, a browser (CDP) driver, and a native Noise/`chat.stream` protocol driver (0.5.0). They are fully independent of each other.
 - **Strict layering**: the protocol layer, service layer, account pool and drivers each have a single responsibility and can be developed and tested on their own.
 - **Fully async**: built on FastAPI + asyncio; the CDP client uses `websockets`, so no request ever blocks a thread.
 - **Account pool**: multiple scheduling strategies, per-account concurrency limits, cooldown after failures, automatic removal of expired sessions, and automatic failover to another account.
@@ -46,7 +46,7 @@ The project focuses on **clean engineering and easy collaboration**:
 
 ## Status
 
-> **Current**: the mock-driver test suite passes locally (81 tests, no network access) and CI runs on every push to main; the browser driver and the direct-protocol driver still need live testing against a real muse.ai account.
+> **Current**: 213 tests pass locally (mock driver, no network). The browser and Noise protocol drivers are live-tested against a real muse.ai account; the protocol driver is the recommended transport.
 
 | Module | Status | Notes |
 |---|---|---|
@@ -55,9 +55,9 @@ The project focuses on **clean engineering and easy collaboration**:
 | Background tasks (video) | ✅ Implemented | Create a task, then poll for the result; unfinished tasks are marked interrupted after a restart |
 | Admin API (account CRUD, renewal, reset, status) | ✅ Implemented | Accepts cookie dicts, raw `Cookie` header strings and EditThisCookie JSON, plus bulk import via `/admin/accounts/import`; per-account quota snapshot at `/admin/accounts/{id}/quota` |
 | Mock driver | ✅ Implemented | Offline fake data |
-| Browser driver (Chromium + CDP) | 🧪 Needs live testing | Full chat, image and video flows are written |
+| Browser driver (Chromium + CDP) | ✅ Implemented | Full chat, image and video flows, live-tested |
 | Session renewal / keepalive | 🧪 Needs live testing | Plain HTTP, on by default every 10 min; also wakes the account's VM so the first request is not slowed by a cold start |
-| Direct HTTP protocol driver | 🚧 Reserved | Returns 501 |
+| Noise protocol driver | ✅ Implemented | Real token stream, isolated threads, images and videos; no Chromium |
 | `/v1/images/edits` (reference images) | ✅ Implemented | Images are references for a new image; `mask` is rejected |
 | `/v1/responses` | 🚧 Reserved | Returns 501 |
 | Streaming heartbeats (SSE keepalive) | ✅ Implemented | Opt-in with `MUSE2API_STREAM_HEARTBEAT_INTERVAL`; sends `: keepalive` comments while waiting for the first token |
@@ -96,7 +96,8 @@ flowchart TB
         direction LR
         d_mock["mock<br/>offline fake data"]
         d_browser["browser<br/>Chromium + CDP"]
-        d_http["http<br/>direct protocol (reserved)"]
+        d_protocol["protocol<br/>Noise + chat.stream"]
+        d_http["http<br/>session renewal / reserved"]
     end
 
     subgraph upstream["upstream/"]
@@ -178,7 +179,7 @@ docker compose up -d --build
 
 ### AstrBot / QQ
 
-Version 0.4.1 includes an AstrBot adapter: the persona is moved into the current user turn, `x-astrbot-conversation-id` becomes the conversation key for isolation and hot-thread reuse, client tools are emulated as standard OpenAI `tool_calls`, and muse.ai's out-of-character disclaimers are removed. Point AstrBot's provider at `http://<host>:18610/v1` with model `gpt-4o` (or `muse-chat`). See [docs/ASTRBOT.md](docs/ASTRBOT.md) and the [test report](docs/ASTRBOT-TEST-REPORT.md).
+Version 0.5.0 includes a native protocol driver plus the AstrBot adapter. The persona is moved into the current user turn, `x-astrbot-conversation-id` becomes the conversation key for isolation and thread reuse, client tools are emulated as standard OpenAI `tool_calls`, and muse.ai's out-of-character disclaimers are removed. Ordinary OpenAI clients that send a `system` message get the same persona bridge. Point AstrBot's provider at `http://<host>:18610/v1` with model `gpt-4o` (or `muse-chat`). See [docs/ASTRBOT.md](docs/ASTRBOT.md), [docs/PROTOCOL.md](docs/PROTOCOL.md) and the [test report](docs/ASTRBOT-TEST-REPORT.md).
 
 If muse.ai is only reachable through a proxy, set both `MUSE2API_BROWSER_PROXY` and `MUSE2API_UPSTREAM_PROXY` (session renewal/VM wake use Python HTTP, not the browser).
 
@@ -325,7 +326,7 @@ All settings come from environment variables (prefix `MUSE2API_`) or a `.env` fi
 
 | Variable | Default | Description |
 |---|---|---|
-| `MUSE2API_DRIVER` | `mock` | Driver: `mock` / `browser` / `http` |
+| `MUSE2API_DRIVER` | `mock` | Driver: `mock` / `browser` / `http` / `protocol` |
 | `MUSE2API_HOST` · `MUSE2API_PORT` | `127.0.0.1` · `18610` | Listen address and port |
 | `MUSE2API_API_KEY` | auto-generated | Key for `/v1/*` endpoints |
 | `MUSE2API_ADMIN_KEY` | same as API key | Key for `/admin/*` endpoints |

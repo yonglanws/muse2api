@@ -18,7 +18,7 @@ Priorities: **P0** must be done first · **P1** core feature · **P2** better ex
 | A4 | Verify session renewal | P0 | `upstream/muse.py` | | Not started |
 | A5 | Verify the Docker image builds and runs | P1 | `Dockerfile` | | Not started |
 | A6 | Enable GitHub Actions CI | P1 | `.github/workflows/ci.yml` | | Done (workflow file in main) |
-| B1 | Direct HTTP protocol driver | P1 | `drivers/http/` | | Not started |
+| B1 | Direct protocol driver (Noise + `chat.stream`) | P1 | `drivers/protocol/` | | Done (0.5.0; live-tested) |
 | B2 | Reuse conversation threads to cut first-token latency | P2 | `drivers/browser/` | | Done |
 | B3 | Quota lookup | P2 | `MuseDriver.quota` | | Partial (mock and browser driver done; http driver and quota-aware scheduling open) |
 | C1 | `/v1/responses` endpoint | P1 | `api/routes/responses.py` | | Done (local; verified with the official OpenAI SDK streaming + non-streaming against the mock driver; real-account check pending) |
@@ -123,7 +123,7 @@ Done. A follow-up whose `messages` continue the conversation already on the page
 
 ### C3 Emulated tool calling · P2
 - muse.ai has no native function calling. The adapter describes the available tools and a **flat JSON** output format in the prompt, parses it, and converts it to OpenAI's `tool_calls` format.
-- **Done (2026-11-15)**: `core/astrbot.py` provides `build_tool_prompt` / `parse_tool_plan` / `make_tool_call`. A planner answer is either `{"tool": "...", "arguments": {...}}` or `{"tool": "NONE", "reply": "..."}`. Tool results continue on the same thread; a refusal or malformed JSON is retried on a fresh thread (`MUSE2API_ASTRBOT_TOOL_RETRIES`, default 2). Non-streaming and buffered streaming are supported. Verified with AstrBot 4.29.4's `ProviderOpenAIOfficial` and a `ToolSet` (query, send, tool result, streaming tool).
+- **Done (2026-11-15, extended 2026-11-16)**: `core/astrbot.py` provides `build_tool_prompt` / `parse_tool_plan` / `make_tool_call`. A planner answer is either `{"tool": "...", "arguments": {...}}` or `{"tool": "NONE", "reply": "..."}`. Tool results continue on the same thread; a refusal or malformed JSON is retried on a fresh thread (`MUSE2API_ASTRBOT_TOOL_RETRIES`, default 2). Non-streaming and buffered streaming are supported. Verified with AstrBot 4.29.4's `ProviderOpenAIOfficial` and a `ToolSet` (query, send, tool result, streaming tool).
 - Remaining: multi-step tool chains are possible but not guaranteed if the model refuses repeatedly.
 
 ### C4 Streaming heartbeats to avoid client timeouts · P2
@@ -220,4 +220,5 @@ anonymous requests used to latch onto each other's threads.
   - `api/deps.py` uses `x-astrbot-conversation-id` as the conversation key. `core/prompt.py` ignores system/tool plumbing when deciding whether a history continues the page; the browser driver keeps a persona fingerprint and reuses the hot page only for the same persona.
   - Tab eviction is LRU; AstrBot streaming is buffered so disclaimers and tool calls can be rewritten before the first chunk.
   - `MUSE2API_UPSTREAM_PROXY` fixes session renewal when muse.ai is only reachable through the browser proxy.
-  - 30 tests in `tests/test_astrbot_compat.py`; live-tested with AstrBot 4.29.4's provider and a Docker deployment. See `docs/ASTRBOT.md` and `docs/ASTRBOT-TEST-REPORT.md`.
+  - 31 tests in `tests/test_astrbot_compat.py`; live-tested with AstrBot 4.29.4's provider and a Docker deployment. See `docs/ASTRBOT.md` and `docs/ASTRBOT-TEST-REPORT.md`.
+  - **0.5.0**: the recommended transport is `MUSE2API_DRIVER=protocol` (Noise/`chat.stream`), which gives real token deltas, thread-scoped subscriptions and image/video resources without Chromium. Ordinary OpenAI clients with a `system` message now use the same persona bridge. Tool arguments are coerced to the tool schema (string ids stay strings).

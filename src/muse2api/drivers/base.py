@@ -57,6 +57,8 @@ class ChatRequest:
     persona never continues the old identity's page."""
     tools: list[dict[str, Any]] | None = None
     """Client tool schemas; the gateway passes them through for prompt building."""
+    system_prompt: str | None = None
+    """System/developer text for clients that do not go through the AstrBot bridge."""
     cancel: asyncio.Event | None = None
 
 

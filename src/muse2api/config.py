@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DriverName = Literal["mock", "browser", "http"]
+DriverName = Literal["mock", "browser", "http", "protocol"]
 PoolStrategyName = Literal["round_robin", "lru", "affinity"]
 
 
@@ -76,6 +76,24 @@ class Settings(BaseSettings):
         "Needs MUSE2API_ACCOUNT_MAX_CONCURRENCY of at least 2; 0 disables.",
     )
     warm_prompt: str = Field(default="Hi", description="Message that starts a warm thread.")
+
+    # protocol driver
+    protocol_ping_interval: float = Field(
+        default=30.0,
+        description="Seconds between /api/ping frames on a protocol connection. 0 disables.",
+    )
+    protocol_wake_confirm: float = Field(
+        default=20.0,
+        description="How long to poll /api/session for RUNNING after waking the VM.",
+    )
+    protocol_thread_ttl: float = Field(
+        default=21600.0,
+        description="Seconds an idle protocol thread stays subscribable. 0 keeps threads forever.",
+    )
+    protocol_max_threads: int = Field(
+        default=64,
+        description="Threads kept per account; the oldest idle thread is closed beyond this.",
+    )
 
     # --- timeouts (seconds) ---
     chat_timeout: float = 300.0

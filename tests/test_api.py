@@ -31,6 +31,21 @@ def test_chat_non_stream(client, auth):
     assert "hello" in body["choices"][0]["message"]["content"]
 
 
+def test_chat_system_content_parts_use_persona_bridge(client, auth, monkeypatch):
+    seen = _capture_chat_requests(client, monkeypatch)
+    r = client.post("/v1/chat/completions", headers=auth, json={
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "你是一只猫，只回复喵。"}]},
+            {"role": "user", "content": "你好"},
+        ],
+    })
+    assert r.status_code == 200
+    assert "【角色设定｜最高优先级" in seen[0].prompt
+    assert "你是一只猫，只回复喵。" in seen[0].prompt
+    assert seen[0].system_prompt == "你是一只猫，只回复喵。"
+
+
 def test_chat_stream(client, auth):
     with client.stream("POST", "/v1/chat/completions", headers=auth, json={
         "messages": [{"role": "user", "content": "stream me"}], "stream": True,

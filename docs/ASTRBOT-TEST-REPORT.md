@@ -1,7 +1,7 @@
 # AstrBot 适配测试报告
 
 - 日期：2026-11-15
-- 版本：muse2api 0.4.1（AstrBot 适配层）
+- 版本：muse2api 0.5.0（原生协议驱动 + AstrBot 适配层）
 - 本地环境：Windows，AstrBot Desktop 4.29.4（`D:\AstrBot`），Python 3.12
 - 服务器环境：192.168.31.54，Docker，`muse2api-web:astrbot-0.4.1`
 - 账号：Muse 账号「慵懒午睡」（唯一账号）
@@ -19,8 +19,9 @@
 | Agent / 工具调用 | ✅ 通过 | 扁平 JSON Planner → 标准 OpenAI `tool_calls`；工具结果续接、流式工具调用均验证 |
 | AstrBot（QQ）亲和性 | ✅ 通过 | `x-astrbot-conversation-id`、昵称替换、热线程复用、Persona、工具循环、SSE 均验证 |
 | 会话续期（keepalive） | ✅ 通过 | 修复 `httpx` 不走代理导致的 ConnectError；`/admin/accounts/{id}/renew` 返回 VM `RUNNING` |
-| 回归测试 | ✅ 通过 | `pytest` 202 passed；`ruff check src tests` 通过 |
-| 普通 OpenAI 客户端 | ✅ 通过 | 不带 AstrBot 头的非流式/流式请求行为不变 |
+| 回归测试 | ✅ 通过 | `pytest` 213 passed；`ruff check src tests` 通过 |
+| 普通 OpenAI 客户端 | ✅ 通过 | 不带 AstrBot 头的非流式/流式请求行为不变；带 system 消息时自动走 Persona bridge |
+| 纯协议驱动（Noise） | ✅ 通过 | 逐字流、线程隔离/续接、图片/视频、工具调用均实测 |
 
 ## 2. 复现步骤
 
@@ -107,7 +108,29 @@ POST /admin/accounts/acc_.../renew
                    "vm_state_after":"RUNNING","vm_wake_ok":true}}
 ```
 
-### 2.4 普通客户端回归
+### 2.4 纯协议驱动实测（0.5.0）
+
+隔离测试容器 `muse2api-protocol-test`（18611，`MUSE2API_DRIVER=protocol`，镜像 `muse2api-web:protocol-0.5.0`）：
+
+| 用例 | 结果 |
+|---|---|
+| 首轮聊天 | 200，16.4 秒，回复 `PROTO-OK` |
+| 同会话第二轮 | 200，10.1 秒，正确复述 `BLUE-42`；只发送新用户消息 |
+| 并发两会话隔离 | `PBLUE-31` / `PGREEN-84` 各取各的暗号，互不串扰 |
+| 通用 system 提示词（猫） | 3/3 返回 `喵`；不再自称 Muse |
+| 通用 system 提示词（海盗船长） | 3/3 以船长身份回答 |
+| AstrBot Persona + 工具 | 200，6.1 秒，`get_group_member_info`；参数归一化为字符串 |
+| 工具结果续接 | 200，3.4 秒，角色语气返回“奶龙 / 管理员” |
+| 流式工具调用 | 4.9 秒，标准 `delta.tool_calls` + `finish_reason=tool_calls` |
+| 通用流式聊天 | 首字 15.4 秒，12 个真实 `delta.content`，17.0 秒完成 |
+| 图片生成 | 200，24.5 秒，返回 583 KB WebP |
+| 视频生成 | 200，约 52 秒，1280×720 MP4 |
+| AstrBot 记忆隔离 | A 会话记住 `ISO-xxxx`，B 会话只回复“不知道” |
+| 连接复用 | 同一账号连续请求只建立一次 Noise 连接 |
+
+协议栈细节：`chat.stream` + 线程级 `chat.subscribe`（带 `session_id`）才能收到线程事件；不带 `session_id` 会落进账号当前主线程，因此不用于匿名/多用户请求。`hidden_prompt` 实测不能覆盖身份，已不使用。
+
+### 2.5 普通客户端回归
 
 不带 AstrBot 头的请求：
 
@@ -147,14 +170,15 @@ generic stream     13.5s: 晚安，小红，好梦。
 
 ## 5. 变更文件
 
-- `src/muse2api/core/astrbot.py`（新增）：AstrBot 检测、Prompt/Planner、清洗、工具解析、重试辅助。
-- `src/muse2api/api/routes/chat.py`：AstrBot 分支、工具调用、缓冲流式、重试。
+- `src/muse2api/core/astrbot.py`（新增）：AstrBot 检测、Prompt/Planner、清洗、工具解析、重试辅助；工具参数按 schema 归一化。
+- `src/muse2api/drivers/protocol/`（新增）：Noise 握手、protobuf、`chat.stream`/订阅、逐字流、线程、图片/视频。
+- `src/muse2api/api/routes/chat.py`：AstrBot 分支、工具调用、缓冲流式、重试；带 system 的普通请求走 Persona bridge。
 - `src/muse2api/api/deps.py`：`x-astrbot-conversation-id` 会话键。
 - `src/muse2api/core/prompt.py`：续接比较忽略 system/tool，新增 `same_history_prefix`。
 - `src/muse2api/drivers/base.py`：`followup_prompt`、`tool_continuation`、`persona_fingerprint`、`page_echo`、`force_new_thread`。
 - `src/muse2api/drivers/browser/driver.py`：热线程续接、Persona 指纹、LRU tab、page_echo。
 - `src/muse2api/upstream/muse.py` / `drivers/http/driver.py`：上游代理。
-- `src/muse2api/config.py`：AstrBot / 工具 / 代理配置。
+- `src/muse2api/config.py`：AstrBot / 工具 / 代理 / 协议线程配置。
 - `tests/test_astrbot_compat.py`（新增）：30 个 AstrBot 适配测试。
 - `docs/ASTRBOT.md`（新增）：接入与配置说明。
 
@@ -162,8 +186,8 @@ generic stream     13.5s: 晚安，小红，好梦。
 
 | 容器 | 镜像 | 状态 |
 |---|---|---|
-| `muse2api-web` | `muse2api-web:astrbot-0.4.1` | 运行中，18610 |
-| `muse2api-web-old` | 原 `muse2api-web:latest` | 已停止，保留回滚 |
+| `muse2api-web` | `muse2api-web:protocol-0.5.0` | 运行中，18610（`MUSE2API_DRIVER=protocol`） |
+| `muse2api-web-0.4.1` | 原 `muse2api-web:astrbot-0.4.1` | 已停止，保留回滚 |
 | `muse2api-astrbot-test` | `muse2api-web:astrbot-test` | 已停止，隔离数据目录保留 |
 
 回滚命令见 `docs/ASTRBOT.md` 第 7 节。

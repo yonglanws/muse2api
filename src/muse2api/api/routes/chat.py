@@ -134,6 +134,43 @@ def _build_plan(body: ChatCompletionRequest, request: Request, messages: list[di
     if tools:
         protocol = astrbot.tool_protocol_text(tools, force_tool=force_tool)
         prompt = f"{prompt}\n\n{protocol}".strip()
+    system_prompt = "\n\n".join(
+        text for role, text in message_turns(messages)
+        if role in ("system", "developer") and text.strip()
+    ).strip()
+    if system_prompt:
+        # The same persona bridge AstrBot uses is the only framing that reliably
+        # wins over Muse's built-in identity. Apply it to ordinary OpenAI clients
+        # too, but leave requests without a system prompt on the old path.
+        if tools:
+            ab = astrbot.build_tool_prompt(
+                messages, tools,
+                max_prompt_chars=settings.astrbot_max_prompt_chars,
+                force_tool=force_tool,
+            )
+        else:
+            ab = astrbot.build_prompt(
+                messages, max_prompt_chars=settings.astrbot_max_prompt_chars,
+                force_tool=force_tool,
+            )
+        persona_fp = (astrbot.persona_fingerprint(ab.system_prompt)
+                      if ab.system_prompt else None)
+        return _Plan(
+            prompt=ab.prompt,
+            followup_prompt=ab.followup_prompt,
+            turns=ab.turns,
+            images=ab.images,
+            images_current_only=True,
+            system_prompt=ab.system_prompt,
+            current_user_text=ab.current_user_text,
+            user_nickname=ab.user_nickname,
+            identity_question=ab.identity_question,
+            has_persona=ab.has_persona,
+            persona_fp=persona_fp,
+            astrbot=True,
+            tools=tools,
+            force_tool=force_tool,
+        )
     turns = message_turns(messages)
     current = next((text for role, text in reversed(turns) if role == "user"), "")
     return _Plan(
@@ -142,7 +179,7 @@ def _build_plan(body: ChatCompletionRequest, request: Request, messages: list[di
         turns=turns,
         images=flat.images,
         images_current_only=False,
-        system_prompt="",
+        system_prompt=system_prompt,
         current_user_text=current,
         user_nickname=None,
         identity_question=astrbot.is_identity_question(current),
@@ -235,6 +272,7 @@ def _retry_request(plan: _Plan, req: ChatRequest, svc: Services, messages: list[
         page_echo=req.page_echo,
         force_new_thread=True,
         tools=plan.tools,
+        system_prompt=plan.system_prompt or None,
         cancel=req.cancel,
     )
 
@@ -322,6 +360,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
         persona_fingerprint=plan.persona_fp,
         page_echo=(plan.current_user_text or "")[:200] or None,
         tools=plan.tools,
+        system_prompt=plan.system_prompt or None,
         cancel=cancel,
     )
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:24]

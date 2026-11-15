@@ -512,3 +512,28 @@ def test_streaming_tool_refusal_is_retried(client, auth, monkeypatch):
     assert names == ["get_weather"]
     assert "tool_calls" in finishes
     assert len(seen) == 2 and seen[1].force_new_thread is True
+
+
+def test_tool_plan_normalizes_arguments_to_schema_types():
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_group_member_info",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "group_id": {"type": "string"},
+                    "user_id": {"type": "string"},
+                    "count": {"type": "integer"},
+                },
+            },
+        },
+    }]
+    tool, args, reply = astrbot.parse_tool_plan(
+        '{"tool":"get_group_member_info","arguments":'
+        '{"group_id":123456,"user_id":789,"count":"5"}}',
+        tools,
+    )
+    assert tool == "get_group_member_info"
+    assert args == {"group_id": "123456", "user_id": "789", "count": 5}
+    assert reply is None

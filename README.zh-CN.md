@@ -38,7 +38,7 @@ muse2api 把 muse.ai 的聊天、文生图和文生视频能力变成标准的 O
 
 项目注重**工程干净和协作友好**：
 
-- **可插拔 driver**：访问上游的方式被抽象在 `MuseDriver` 接口后面。目前有一个 mock driver 和一个浏览器（CDP）driver，还为直连协议（HTTP）driver 预留了位置。三者完全独立。
+- **可插拔 driver**：访问上游的方式被抽象在 `MuseDriver` 接口后面。目前有 mock、浏览器（CDP）和原生 Noise/`chat.stream` 协议 driver（0.5.0），三者完全独立。
 - **严格分层**：协议层、服务层、账号池、driver 各司其职，可以单独开发和测试。
 - **全异步**：基于 FastAPI + asyncio；CDP 客户端用 `websockets`，没有任何请求会阻塞线程。
 - **账号池**：多种调度策略、按账号的并发限制、失败后冷却、过期会话自动剔除、自动故障转移。
@@ -46,7 +46,7 @@ muse2api 把 muse.ai 的聊天、文生图和文生视频能力变成标准的 O
 
 ## 状态
 
-> **当前**：本地 mock-driver 测试套件通过（81 个测试，无需网络），每次推送到 main 都会跑 CI；浏览器 driver 和直连协议 driver 仍需用真实 muse.ai 账号做实测。
+> **当前**：本地 213 个测试通过（mock driver，无需网络）。浏览器 driver 和 Noise 协议 driver 已用真实 muse.ai 账号实测；推荐使用协议 driver。
 
 | 模块 | 状态 | 备注 |
 |---|---|---|
@@ -55,9 +55,9 @@ muse2api 把 muse.ai 的聊天、文生图和文生视频能力变成标准的 O
 | 后台任务（视频） | ✅ 已实现 | 先建任务再轮询结果；重启后未完成的任务会标记为中断 |
 | Admin API（账号增删改查、续期、重置、状态） | ✅ 已实现 | 支持 cookie 字典、原始 `Cookie` 请求头字符串、EditThisCookie JSON 三种导入格式，还有批量导入接口 `/admin/accounts/import`；单账号额度快照 `/admin/accounts/{id}/quota` |
 | Mock driver | ✅ 已实现 | 离线假数据 |
-| 浏览器 driver（Chromium + CDP） | 🧪 待实测 | 聊天、图片、视频全流程已写好 |
+| 浏览器 driver（Chromium + CDP） | ✅ 已实现 | 聊天、图片、视频全流程已实测 |
 | 会话续期 / 保活 | 🧪 待实测 | 纯 HTTP，默认开启，每 10 分钟一次；同时唤醒账号的 VM，第一条请求不用等冷启动 |
-| 直连 HTTP 协议 driver | 🚧 预留 | 返回 501 |
+| Noise 纯协议 driver | ✅ 已实现 | 真实逐字流、线程隔离、图片/视频；不需要 Chromium |
 | `/v1/images/edits`（参考图） | ✅ 已实现 | 参考图用于生成新图；不支持 `mask` |
 | `/v1/responses` | 🚧 预留 | 返回 501 |
 | 流式心跳（SSE keepalive） | ✅ 已实现 | 用 `MUSE2API_STREAM_HEARTBEAT_INTERVAL` 开启；等第一个 token 期间发送 `: keepalive` 注释 |
@@ -96,7 +96,8 @@ flowchart TB
         direction LR
         d_mock["mock<br/>离线假数据"]
         d_browser["browser<br/>Chromium + CDP"]
-        d_http["http<br/>直连协议（预留）"]
+        d_protocol["protocol<br/>Noise + chat.stream"]
+        d_http["http<br/>会话续期 / 预留"]
     end
 
     subgraph upstream["upstream/"]
@@ -178,7 +179,7 @@ docker compose up -d --build
 
 ### 接入 AstrBot / QQ
 
-0.4.1 起内置 AstrBot 适配：把 Persona 放进当前用户轮、用 `x-astrbot-conversation-id` 做会话隔离和热线程复用、把工具调用转换成标准 OpenAI `tool_calls`，并清洗 muse.ai 的出戏免责声明。AstrBot 的 Provider 填 `http://<host>:18610/v1`、模型 `gpt-4o`（或 `muse-chat`）即可。完整配置、行为说明和限制见 [docs/ASTRBOT.md](docs/ASTRBOT.md)，测试记录见 [docs/ASTRBOT-TEST-REPORT.md](docs/ASTRBOT-TEST-REPORT.md)。
+0.5.0 内置原生协议 driver 和 AstrBot 适配：把 Persona 放进当前用户轮、用 `x-astrbot-conversation-id` 做会话隔离和线程复用、把工具调用转换成标准 OpenAI `tool_calls`，并清洗 muse.ai 的出戏免责声明。普通 OpenAI 客户端只要带 `system` 消息，也会自动走同一套 Persona bridge。AstrBot 的 Provider 填 `http://<host>:18610/v1`、模型 `gpt-4o`（或 `muse-chat`）即可。完整配置、行为说明和限制见 [docs/ASTRBOT.md](docs/ASTRBOT.md)、[docs/PROTOCOL.md](docs/PROTOCOL.md)，测试记录见 [docs/ASTRBOT-TEST-REPORT.md](docs/ASTRBOT-TEST-REPORT.md)。
 
 如果 muse.ai 只能通过代理访问，除了 `MUSE2API_BROWSER_PROXY`，还要设置 `MUSE2API_UPSTREAM_PROXY`（会话续期/VM 唤醒的 Python HTTP 调用也走代理）。
 
@@ -325,7 +326,7 @@ muse.ai 的会话 cookie 都是 httpOnly，页面脚本读不到；一个小小�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `MUSE2API_DRIVER` | `mock` | driver：`mock` / `browser` / `http` |
+| `MUSE2API_DRIVER` | `mock` | driver：`mock` / `browser` / `http` / `protocol` |
 | `MUSE2API_HOST` · `MUSE2API_PORT` | `127.0.0.1` · `18610` | 监听地址和端口 |
 | `MUSE2API_API_KEY` | 自动生成 | `/v1/*` 接口的 key |
 | `MUSE2API_ADMIN_KEY` | 同 API key | `/admin/*` 接口的 key |

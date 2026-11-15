@@ -132,3 +132,4 @@ def flatten_messages(messages: list[dict[str, Any]]) -> FlatPrompt:
         "User message. Output only the reply."
     )
     return FlatPrompt(text="\n\n".join(blocks), images=images)
+
