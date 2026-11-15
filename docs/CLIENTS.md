@@ -24,15 +24,12 @@ print(resp.choices[0].message.content)
 
 ## system / developer 消息
 
-muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关会把 `system` / `developer` 消息收集成一个前置指令块，再发送当前用户消息；后续轮次只发送新的用户轮。不同系统提示词会生成不同指纹，驱动据此决定是否新开线程。
+muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机制让 system 语义真正生效（0.7.0）：
 
-网关不做以下事情：
+1. **VM 托管规则**：账号 VM 的 `IDENTITY.md` / `SOUL.md` / `AGENTS.md` 是 Agent 每次会话开始都会读取的自述文件。网关在里面维护一段带标记的托管规则：API 会话跟随 system 指令、禁用账号记忆工具（`muse.memory_search` / `muse.memory_get` / MEMORY.md）、优先使用已注册客户端命令。原文件先备份到 `data/harness_backup/`，`POST /admin/harness/{id}/restore` 可随时还原，`MUSE2API_NATIVE_HARNESS=false` 可整体关闭。
+2. **会话内指令块**：`system` / `developer` 消息收集成前置指令块，当前用户消息单独放最后；后续轮次只发送新的用户轮。不同系统提示词生成不同指纹，驱动据此决定是否新开线程。
 
-- 不修改 muse.ai 账号里的 IDENTITY / SOUL / USER / AGENTS / MEMORY 文件；
-- 不修改回复内容，也不做平台特定的重试；
-- 不注入任何平台特定的场景 XML 或会话头。
-
-系统提示词只是被转换成模型更容易遵循的指令块，模型仍可能弱化其中的部分约束。
+实测：带 system 的会话里，模型会自称 system 定义的姓名、精确跟随输出格式、不泄露账号主人的记忆。没有 system 消息、只用普通用户文本描述身份时，直接问"你是谁"仍可能自称 Muse——这与 OpenAI 的语义一致（user 弱于 system）。
 
 ## 工具调用
 
@@ -70,5 +67,6 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关会把 `system
 
 - muse.ai 是 Agent，不是可完全控制的 LLM；它可能拒绝某些请求，或给出与普通 LLM 不同的结果。
 - 工具调用优先走原生通道，Planner 是兜底；连续拒绝、重试耗尽后可能返回普通文本而不是 `tool_calls`。
-- 账号级记忆属于 muse.ai 账号；网关按 API Key + `user` 隔离线程，但无法删除上游账号里的记忆。
+- 账号级记忆属于 muse.ai 账号；网关通过隔离前导 + 托管规则在 API 会话中禁用它（0.7.0 实测有效），但无法删除上游账号里的记忆文件本身。
+- 只有 `ui.navigate.*` / `ui.set.*` 命名空间的客户端命令会被 muse.ai 路由（逆向确认）。
 - 历史图片只保留占位符，跨线程依赖完整图片细节时可能丢失。

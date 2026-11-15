@@ -56,7 +56,19 @@ MUSE2API_PROTOCOL_THREAD_TTL=21600
 
 ## 4. 系统提示词
 
-muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条用户消息。网关在入口保留 OpenAI 语义，而不是把 `system` 当成普通聊天内容：
+muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条用户消息。0.7.0 起网关用两层机制逼近真正的 system 语义。
+
+### 4.1 VM 托管规则（`MUSE2API_NATIVE_HARNESS`，默认开启）
+
+对 muse.ai 前端与 VM 文件系统的逆向发现：Agent 在**每次会话开始时读取** `~/IDENTITY.md`、`~/SOUL.md`、`~/AGENTS.md`，之后服务端还会把它们作为上下文逐轮重新注入。这是 muse.ai 上最接近 system role 的通道。网关在这三个文件的末尾维护一段 `muse2api-managed` 标记包裹的规则（幂等、可还原）：
+
+- API 会话（首条用户消息带【系统指令】）必须整段跟随指令定义的角色、语气、约束与输出格式；
+- 禁止调用 `muse.memory_search` / `muse.memory_get`，不读 MEMORY.md / USER.md / memory 目录（实测：明确点名这些工具后，模型才会真正放弃账号记忆，不再把用户当作账号主人）；
+- 已注册客户端命令的会话，匹配任务时优先调用客户端命令而不是内置浏览器/搜索工具。
+
+原始文件在首次应用前备份到 `data/harness_backup/<account>/`；`GET /admin/harness` 查看状态，`POST /admin/harness/{account_id}/restore` 还原。
+
+### 4.2 会话内指令块
 
 1. `system` / `developer` 消息被收集成一个前置指令块，标记为最高优先级；
 2. 当前用户消息单独放在最后，指令和问题分开；
@@ -64,11 +76,13 @@ muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条�
 4. 系统提示词按空白归一化后生成指纹；指纹变化时驱动开新线程，避免新旧指令混用；
 5. `MUSE2API_MAX_PROMPT_CHARS` 限制提示词长度，超长时优先保留末尾的对话与任务说明。
 
-网关**不修改** muse.ai 账号里的任何文件（不碰 IDENTITY / SOUL / USER / AGENTS / MEMORY），也不修改回复内容。它只负责把 OpenAI 消息转换成 muse.ai 能接受的提示词，再把回复原样返回。
+**0.7.0 实测（真实 muse.ai，经网关全链路）**：带 system 的会话中，模型自称角色名（"我是 Atlas-77，一个天气问答助手"）、回复格式精确跟随（两短句）、记忆隔离生效（不再泄露账号主人信息）；同线程续接保持规则；工具调用与结果续接正常。
 
-## 5. 工具调用（0.5.1：原生客户端工具通道）
+**已知边界**（逆向确认，无法绕过）：muse.ai 的核心身份写在服务端静态提示词里（VM 内 `workspace/system/system_prompt.md`，73 KB，可读但没有写入口）。没有 system 消息、仅把身份写在普通用户文本里时，直接问"你是谁"仍会自称 Muse——这与 OpenAI 语义一致（user 消息弱于 system），不是网关缺陷。`hidden_prompt` 字段行为惰性；Shared Agents（自带 identity/definition 的真 system 通道）服务端已 404 下线；`goal_prompt` 返回 410；`chat.stream` 的 `model` 字段被接受但忽略。
 
-对 muse.ai 前端 JS 的逆向发现了真正的客户端工具通道，0.5.1 已完整接入：
+## 5. 工具调用（原生客户端工具通道 + Planner 兜底）
+
+对 muse.ai 前端 JS 的逆向发现了真正的客户端工具通道：
 
 ```
 POST /client/register-capabilities   声明 hatch_app_commands（参数 schema、超时）
@@ -79,26 +93,28 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 
 关键事实（逆向 + 实测验证）：
 
-- 只有 `ui.navigate.*` 命名空间会被注入 Agent 的工具列表（`api.*`/`web.*` 会被接受但永远不会被路由）；
+- **0.7.0 修正**：`ui.navigate.*` 和 `ui.set.*` 两个命名空间都会被注入 Agent 的工具列表并路由；`api.*`/`device.*`/`hatch.*`/`web.*`/`client.*` 注册时全部被接受（`accepted_hatch_app_commands` 计数、`rejected_ids` 为空）但调用返回 `capabilities_not_declared`，永远不会路由；
 - Agent 通过 `ui.list` 发现命令，调用时附带 `mode: perform|suggest|lightup`（网关会剥掉）；
 - 注册时 `linked_nodes` 绑定 `node_id`，且 `chat.stream` 的 `node_id` 必须是同一个稳定 id（0.5.0 的每轮随机 uuid 收不到 invoke）；
 - 命令声明必须**稳定存在**（连接生命周期内不撤销/重注册，否则 VM 侧不再注入）；
-- 每个命令有 `timeout_ms`（网关注册 30s）；网关对捕获的调用立即应答 `{status:"dispatched"}`，对无关调用应答 `not_available`。
+- 每个命令有 `timeout_ms`（网关注册 30s）；网关对捕获的调用立即应答 `{status:"dispatched"}`，对无关调用应答 `not_available`；
+- **0.7.0**：一轮可以产生多个 `client.invoke`（Agent 顺序调用多条命令），驱动全部捕获并编码为 `{"calls":[...]}`，OpenAI 层展开成多条 `tool_calls`；
+- `chat.stream` 的 `tool_call_prefill` 字段（Web 端用它预置 `browser.windows`）**不能**预置客户端命令，实测不产生 `client.invoke`。
 
-0.5.1 的混合通道（`MUSE2API_TOOL_CHANNEL=auto`，默认）：
+混合通道（`MUSE2API_TOOL_CHANNEL=auto`，默认）：
 
 1. 每次带 `tools` 的请求，网关把 OpenAI 工具转换为 `ui.navigate.<tool>` 命令注册；
-2. 提示词在扁平 JSON Planner 的基础上加“真实工具”段：这些工具已真实注册，可直接调用，禁止说“没有这个工具”；
-3. Muse 原生调用 → `client.invoke` 事件 → 网关捕获并重编码为 `{"tool":...,"arguments":...}` → 标准 OpenAI `tool_calls`；
-4. Muse 输出 JSON → 原 Planner 路径解析。两条路都产出标准 `tool_calls`，拒绝类回复（“没有该工具/命令未声明/查不到”）会触发 Planner 重试。
+2. 提示词在扁平 JSON Planner 的基础上加"真实工具"段：这些工具已真实注册，优先使用它们而不是内置浏览器/搜索工具，禁止说"没有这个工具"；
+3. Muse 原生调用 → `client.invoke` 事件 → 网关捕获并重编码 → 标准 OpenAI `tool_calls`（支持多条）；
+4. Muse 输出 JSON → 原 Planner 路径解析。两条路都产出标准 `tool_calls`，拒绝类回复（"没有该工具/命令未声明/查不到"）会触发 Planner 重试。
 
-`MUSE2API_TOOL_CHANNEL=planner` 可退回纯 Planner。实测（生产容器，3 轮 × 4 项全部通过）：
+`MUSE2API_TOOL_CHANNEL=planner` 可退回纯 Planner。实测（真实 muse.ai，0.7.0 网关全链路）：
 
 ```
-非流式 tool_calls       3.9–7.3s   {"group_id":"123456","user_id":"789"}（类型正确）
+非流式 tool_calls       finish=tool_calls，{"city":"北京"} 参数正确
 流式 tool_calls         finish=tool_calls，delta.tool_calls 正常
-工具结果续接            2.3–4.4s，正确引用返回值
-真实 OpenAI 客户端   system/tool/continuation/stream 全部通过
+工具结果续接            正确引用返回值，格式规则保持
+并行工具解析            {"calls":[...]} → 多条 tool_calls（单元测试覆盖）
 ```
 
 保留的 0.5.0 改进：参数按 JSON Schema 归一化（数字 `123456` 会按 schema 转成 `"123456"`）；工具结果续接走同一线程；流式以标准 `delta.tool_calls` 输出，`finish_reason=tool_calls`。
@@ -126,22 +142,24 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 | `MUSE2API_TOOL_CHANNEL` | `auto` | `auto`/`native`：原生客户端工具 + Planner 兜底；`planner`：只用扁平 JSON Planner |
 | `MUSE2API_MAX_PROMPT_CHARS` | `18000` | 系统指令与历史的最大长度 |
 | `MUSE2API_TOOL_RETRIES` | `2` | Planner 被拒绝时的重试次数 |
+| `MUSE2API_NATIVE_HARNESS` | `true` | 在账号 VM 的 IDENTITY/SOUL/AGENTS.md 维护托管规则（备份在 `data/harness_backup/`，可用 `/admin/harness` 还原） |
 
 ## 8. 已知限制
 
 1. **confidential VM**：只支持标准 `hatch_vm`。如果账号被分配到 confidential VM / delegation notary，驱动会返回明确错误，不会静默回退浏览器。
 2. **上游行为**：muse.ai 仍是 Agent，不是可完全控制的 LLM；它可能拒绝某些请求，或给出与普通 LLM 不同的结果。
-3. **账号级记忆**：线程历史与提示词隔离能降低串扰，但记忆文件在 Muse VM 内部被读取，协议层无法拦截或删除。
+3. **账号级记忆**：会话隔离前导 + 托管规则明确禁用 `muse.memory_search` / `muse.memory_get`（0.7.0 实测有效）；账号的记忆文件本身仍会由上游的后台整理流程读写，网关不会删除或改写 MEMORY.md。
 4. **线程订阅**：每个活跃线程一个长连接订阅；大量并发会话会占用上游订阅资源，默认 64 个/账号，按 LRU 淘汰。
-5. **系统提示词边界**：`system` 内容被转换成一条高优先级用户指令，不是模型的原生 system role；模型仍可能忽略或弱化其中的部分约束。
-6. **原生工具的随机性**：Muse 偶尔无视已注册命令直接说“没有这个工具”；混合通道用“真实工具”提示词 + 拒绝检测 + Planner 重试兜底，实测 3/3 成功，但上游行为不能 100% 保证。
+5. **系统提示词边界**：`system` 通过"托管规则 + 指令块"双层注入，实测能稳定跟随角色、格式与记忆隔离；但 muse.ai 服务端的静态核心提示词（VM 内 `workspace/system/system_prompt.md`）没有写入口，完全替换模型身份做不到。没有 system 消息时行为与 OpenAI 语义一致（user 文本弱于 system）。
+6. **原生工具的随机性**：Muse 偶尔无视已注册命令直接说"没有这个工具"，或优先用自己的内置工具；混合通道用"真实工具"提示词 + 托管规则 + 拒绝检测 + Planner 重试兜底，上游行为不能 100% 保证。
 7. **命令注册是连接级的**：同账号所有会话共享已注册命令；无关会话的 Muse 若自发调用会被 `not_available` 拒绝并自行解释。
 8. **图片格式**：返回上游原始格式（常见 WebP），不强制转 PNG；`background=transparent` 仍需要可选 matting extra。
+9. **托管规则影响整个账号**：IDENTITY.md/SOUL.md 的托管段对该账号在 muse.ai 网页端的手工使用也可见。需要原样使用网页端时，先 `POST /admin/harness/{id}/restore` 还原备份。
 
 ## 9. 部署与回滚
 
 ```bash
-docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.6.0 .
+docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.7.0 .
 docker run -d --name muse2api-web \
   --restart unless-stopped \
   -p 18610:18610 \
@@ -155,7 +173,7 @@ docker run -d --name muse2api-web \
   -e MUSE2API_ACCOUNT_MAX_CONCURRENCY=4 \
   -e MUSE2API_KEEPALIVE_ENABLED=true \
   -e MUSE2API_EMULATE_TOOLS=true \
-  muse2api-web:protocol-0.6.0
+  muse2api-web:protocol-0.7.0
 ```
 
 回滚到浏览器驱动（保留旧容器）：

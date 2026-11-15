@@ -20,3 +20,4 @@ data/
 
 # local test artifacts, downloaded DB copies, prompts
 .tmp/
+data-e2e/

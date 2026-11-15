@@ -138,6 +138,8 @@ def _usage(prompt_text: str, completion_text: str) -> dict:
 def _needs_tool_retry(text: str, plan: _Plan) -> bool:
     if not plan.tools:
         return False
+    if tool_plan.parse_tool_calls_list(text, plan.tools) is not None:
+        return False
     tool, _, reply = tool_plan.parse_tool_plan(text, plan.tools)
     if tool or reply is not None:
         return False
@@ -294,9 +296,23 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                         break
             tool = None
             reply = None
-            if plan.tools:
+            calls = tool_plan.parse_tool_calls_list(produced, plan.tools) if plan.tools else None
+            if calls is None and plan.tools:
                 tool, args, reply = tool_plan.parse_tool_plan(produced, plan.tools)
-            if tool:
+            if calls:
+                encoded = [tool_plan.make_tool_call(name, args or {})
+                           for name, args in calls]
+                yield _sse(chunk({"role": "assistant", "content": None, "tool_calls": [
+                    {"index": i, "id": call["id"], "type": "function",
+                     "function": {"name": call["function"]["name"], "arguments": ""}}
+                    for i, call in enumerate(encoded)
+                ]}))
+                for i, call in enumerate(encoded):
+                    yield _sse(chunk({"tool_calls": [
+                        {"index": i, "function": {"arguments": call["function"]["arguments"]}}
+                    ]}))
+                yield _sse(chunk({}, "tool_calls"))
+            elif tool:
                 call = tool_plan.make_tool_call(tool, args or {})
                 yield _sse(chunk({"role": "assistant", "content": None, "tool_calls": [
                     {"index": 0, "id": call["id"], "type": "function",
@@ -384,15 +400,22 @@ def _completion(plan: _Plan, text: str,
     message: dict = {}
     finish = "stop"
     if plan.tools:
-        tool, args, reply = tool_plan.parse_tool_plan(text, plan.tools)
-        if tool:
+        calls = tool_plan.parse_tool_calls_list(text, plan.tools)
+        if calls:
             message = {"role": "assistant", "content": None,
-                       "tool_calls": [tool_plan.make_tool_call(tool, args or {})]}
+                       "tool_calls": [tool_plan.make_tool_call(name, args or {})
+                                      for name, args in calls]}
             finish = "tool_calls"
-        elif reply is not None:
-            message = {"role": "assistant", "content": _clean_text(reply)}
         else:
-            message = {"role": "assistant", "content": _clean_text(text)}
+            tool, args, reply = tool_plan.parse_tool_plan(text, plan.tools)
+            if tool:
+                message = {"role": "assistant", "content": None,
+                           "tool_calls": [tool_plan.make_tool_call(tool, args or {})]}
+                finish = "tool_calls"
+            elif reply is not None:
+                message = {"role": "assistant", "content": _clean_text(reply)}
+            else:
+                message = {"role": "assistant", "content": _clean_text(text)}
     else:
         message = {"role": "assistant", "content": _clean_text(text)}
     return {

@@ -4,7 +4,7 @@
 
 muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/completions`、`/v1/images/generations`、`/v1/videos` 这些熟悉的 OpenAI 接口，对内通过原生 Noise 协议连接 muse.ai 的网页 Agent。它不模拟网页点击，也不把提示词简单拼在聊天框里，而是直接使用 muse.ai 自己的会话、线程和客户端工具通道。
 
-这一版是 **0.6.0**。
+这一版是 **0.7.0**。
 
 ## 先说结论
 
@@ -96,13 +96,12 @@ muse.ai 网页 Agent  ──  系统指令 · 线程 · 客户端工具  ── 
 
 ## 系统提示词
 
-muse.ai 的 `chat.stream` 没有独立的 `system` 角色，所有文本最终都是一条用户消息。网关在入口保留 OpenAI 语义：
+muse.ai 的 `chat.stream` 没有独立的 `system` 角色。0.7.0 起网关用两层机制让 system 语义真正生效：
 
-- `system` / `developer` 消息被收集成一个指令块，放在提示词最前面；
-- 当前用户消息单独留在最后，指令和问题不会混在一起；
-- 同一 `user` 的后续请求只发送新的用户轮，前面的系统指令和历史已经在线程里；
-- `system` 内容变化时，指令指纹变化，驱动会开一个新线程，避免新旧指令混用；
-- 网关**不修改** muse.ai 账号里的任何文件，也不修改回复内容；它只做协议转换。
+- **VM 托管规则**：muse.ai 的 Agent 每次会话开始都会读取账号 VM 里的 `IDENTITY.md` / `SOUL.md` / `AGENTS.md`，服务端还会逐轮把它们重新注入上下文——这是 muse.ai 上最接近 system role 的通道。网关在这三个文件末尾维护一段带标记的托管规则（API 会话跟随 system 指令、禁用账号记忆工具、优先使用已注册客户端命令）。原文件先备份到 `data/harness_backup/`，`POST /admin/harness/{id}/restore` 一键还原；
+- **会话内指令块**：`system` / `developer` 消息被收集成一个指令块，放在提示词最前面；当前用户消息单独留在最后；同一 `user` 的后续请求只发送新的用户轮；`system` 内容变化时指令指纹变化，驱动会开一个新线程。
+
+实测效果（真实 muse.ai 全链路）：带 system 的会话里，模型自称 system 定义的姓名、精确跟随输出格式（如"恰好两个短句"）、不泄露账号主人的记忆。对协议与注入边界的完整逆向记录见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 过长的系统指令会按 `MUSE2API_MAX_PROMPT_CHARS` 截断，优先保留末尾的对话与任务说明。
 
@@ -111,7 +110,7 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色，所有文本最终�
 muse.ai 网页端有一套客户端工具协议。网关把它接成了标准 OpenAI 工具调用：
 
 1. 请求带 `tools` 时，调用 `client.register_capabilities` 注册 `ui.navigate.<工具名>` 命令；
-2. Muse 在自己的工具循环里调用命令，网关收到 `client.invoke` 事件；
+2. Muse 在自己的工具循环里调用命令，网关收到 `client.invoke` 事件（一轮多条调用也会全部捕获）；
 3. 网关立即应答，避免命令超时，并把调用重编码为标准 `tool_calls`；
 4. 客户端把工具结果发回来，网关续接同一线程继续对话；
 5. Planner 作为兜底输出契约，Muse 走哪条路径都能产出 `tool_calls`。
@@ -205,6 +204,7 @@ curl http://localhost:18610/v1/videos \
 | `MUSE2API_TOOL_CHANNEL` | `auto` | `auto` / `native` / `planner` |
 | `MUSE2API_MAX_PROMPT_CHARS` | `18000` | 系统指令与历史的最大长度 |
 | `MUSE2API_TOOL_RETRIES` | `2` | Planner 被拒绝时的重试次数 |
+| `MUSE2API_NATIVE_HARNESS` | `true` | 在账号 VM 的 IDENTITY/SOUL/AGENTS.md 维护托管规则，备份可还原 |
 | `MUSE2API_EMULATE_TOOLS` | `true` | 是否启用工具调用 |
 | `MUSE2API_KEEPALIVE_ENABLED` | `true` | 后台续期与 VM 唤醒 |
 | `MUSE2API_KEEPALIVE_INTERVAL` | `600` | 保活间隔（秒） |
@@ -262,9 +262,10 @@ docker run -d --name muse2api \
 
 1. muse.ai 是 Agent，不是可完全控制的 LLM；它仍可能拒绝某些请求，或输出与普通 LLM 不同的结果。
 2. 工具调用优先走原生通道，Planner 是兜底；连续拒绝、重试耗尽后可能返回普通文本而不是 `tool_calls`。
-3. muse.ai 的账号级记忆仍可能影响新会话；网关按 API Key + `user` 隔离线程，但不能删除上游账号里的记忆。
-4. 历史图片只保留占位符，跨线程依赖完整图片细节时可能丢失。
-5. 多人使用时请增加账号，而不是无限提高单账号并发；一个 muse.ai 账号运行在一台 VM 上。
+3. API 会话里的账号级记忆已被托管规则禁用（实测有效），但 muse.ai 上游的后台整理流程仍可能往账号记忆里写笔记；网关不删除、不改写账号的 MEMORY.md。
+4. 没有 `system` 消息、只用普通用户文本描述身份时，直接问"你是谁"仍可能自称 Muse——这与 OpenAI 语义一致（user 弱于 system）。
+5. 历史图片只保留占位符，跨线程依赖完整图片细节时可能丢失。
+6. 多人使用时请增加账号，而不是无限提高单账号并发；一个 muse.ai 账号运行在一台 VM 上。
 
 ## 来路
 

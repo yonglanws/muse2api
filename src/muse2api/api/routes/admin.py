@@ -19,7 +19,7 @@ from ... import __version__
 from ...accounts.keepalive import renew_account
 from ...accounts.model import Account, AccountStatus
 from ...auth.keys import ApiKey
-from ...errors import InvalidRequest, Muse2APIError, NotFound
+from ...errors import FeatureNotImplemented, InvalidRequest, Muse2APIError, NotFound
 from ...services.container import Services
 from ...upstream.muse import missing_session_cookies
 from ..deps import get_services, require_admin_key
@@ -183,6 +183,29 @@ async def account_quota(account_id: str, refresh: bool = False,
     acc.meta["quota"] = {"checked_at": time.time(), **snapshot}
     await svc.pool.upsert(acc)
     return {"account_id": acc.id, "quota": acc.meta["quota"]}
+
+
+@router.get("/harness")
+async def harness_status(svc: Services = Depends(get_services)) -> dict:
+    """Per-account state of the protocol driver's VM harness-file policy."""
+    driver = svc.driver
+    info = getattr(driver, "harness_status", None)
+    if info is None:
+        return {"driver": getattr(driver, "name", ""), "supported": False}
+    accounts = [await info(acc.id) for acc in svc.pool.all()]
+    return {"driver": getattr(driver, "name", ""), "supported": True,
+            "accounts": accounts}
+
+
+@router.post("/harness/{account_id}/restore")
+async def harness_restore(account_id: str, svc: Services = Depends(get_services)) -> dict:
+    """Put the backed-up originals of the account's harness files back in place."""
+    restore = getattr(svc.driver, "harness_restore", None)
+    if restore is None:
+        raise FeatureNotImplemented("harness restore needs the protocol driver")
+    _get(svc, account_id)
+    restored = await restore(account_id)
+    return {"account_id": account_id, "restored": restored}
 
 
 @router.get("/extension.zip")

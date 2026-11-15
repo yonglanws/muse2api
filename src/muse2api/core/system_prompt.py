@@ -262,6 +262,7 @@ def build_tool_prompt(
     if native:
         sections.append(
             "【真实工具】以上工具也已经注册为本客户端的命令，可以直接调用；"
+            "优先使用这些客户端命令，不要用内置浏览器、搜索或记忆工具代替。"
             "如果真实调用了命令，就不要再输出 JSON。绝对不要说“没有这个工具”或“无法调用”。"
         )
     if retry:
@@ -296,7 +297,8 @@ def build_tool_prompt(
     follow.append(f"【可用工具】\n{specs}")
     if native:
         follow.append(
-            "【真实工具】需要时可以直接调用已注册的客户端命令；真实调用后不要再输出 JSON。"
+            "【真实工具】需要时优先调用已注册的客户端命令，不要用内置工具代替；"
+            "真实调用后不要再输出 JSON。"
         )
     follow.append(
         "【任务】需要工具时只输出 {\"tool\":\"工具名\",\"arguments\":{...}}；"

@@ -128,6 +128,14 @@ class Settings(BaseSettings):
         description="Retries when muse.ai refuses an emulated tool call instead of "
         "returning planner JSON. Each retry uses a fresh thread.",
     )
+    native_harness: bool = Field(
+        default=True,
+        description="Protocol driver: keep a fenced muse2api-managed section in the "
+        "account's VM harness files (IDENTITY.md / SOUL.md / AGENTS.md) so API "
+        "sessions get system-instruction adherence, memory isolation and reliable "
+        "client-command use. Originals are backed up under data/harness_backup/; "
+        "/admin/harness can restore them.",
+    )
 
     # --- account pool ---
     pool_strategy: PoolStrategyName = "affinity"

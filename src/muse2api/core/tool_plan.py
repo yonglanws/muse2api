@@ -243,3 +243,51 @@ def strip_text_prefix(text: str) -> str:
     if cleaned.upper().startswith("TEXT:"):
         return cleaned[5:].lstrip()
     return text
+
+
+def parse_tool_calls_list(
+    text: str, tools: list[dict[str, Any]] | None
+) -> list[tuple[str, dict[str, Any]]] | None:
+    """Parse every tool call in a reply into ``[(name, arguments), ...]``.
+
+    Accepts the driver's native re-encoding (``{"calls": [...]}``), a single
+    flat planner object (``{"tool": ..., "arguments": ...}``) and an OpenAI-ish
+    ``{"tool_calls": [...]}`` body.  ``None`` means "not a tool reply".
+    """
+    allowed = _allowed_names(tools)
+    if not text or not allowed:
+        return None
+    data = _json_body(text)
+    if data is None:
+        return None
+
+    items: list[Any] | None = None
+    if isinstance(data.get("calls"), list):
+        items = data["calls"]
+    elif isinstance(data.get("tool_calls"), list):
+        items = data["tool_calls"]
+    elif data.get("tool") is not None or data.get("name") is not None:
+        items = [data]
+    if not items:
+        return None
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        fn = item.get("function") if isinstance(item.get("function"), dict) else item
+        name = fn.get("tool") or fn.get("name")
+        if not isinstance(name, str) or name not in allowed:
+            return None
+        args = fn.get("arguments", item.get("arguments", {}))
+        if args is None:
+            args = {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (ValueError, TypeError):
+                return None
+        if not isinstance(args, dict):
+            return None
+        calls.append((name, _normalize_arguments(name, args, tools or [])))
+    return calls or None
