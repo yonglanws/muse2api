@@ -130,7 +130,20 @@ POST /admin/accounts/acc_.../renew
 
 协议栈细节：`chat.stream` + 线程级 `chat.subscribe`（带 `session_id`）才能收到线程事件；不带 `session_id` 会落进账号当前主线程，因此不用于匿名/多用户请求。`hidden_prompt` 实测不能覆盖身份，已不使用。
 
-### 2.5 普通客户端回归
+### 2.5 本机 AstrBot Provider 直连生产 0.5.0
+
+用本机 AstrBot 4.29.4 的实际 `ProviderOpenAIOfficial` 指向生产 `http://192.168.31.54:18610/v1`，不经过 AstrBot WebChat/生产 AstrBot：
+
+```
+text_chat(persona)        -> '我是晓山瑞希，25点的MV担当Amia哦～'
+text_chat(ToolSet)        -> names=['get_group_member_info']
+                             args=[{'group_id': '123456', 'user_id': '789'}]
+text_chat_stream          -> deltas == final，逐字内容一致
+```
+
+这覆盖了 AstrBot 的 Provider 请求构造、`system_prompt`、`tools`、`conversation_id` 请求头、流式累积和 `LLMResponse` 解析。
+
+### 2.6 普通客户端回归
 
 不带 AstrBot 头的请求：
 
