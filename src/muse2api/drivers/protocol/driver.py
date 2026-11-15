@@ -105,6 +105,7 @@ class ProtocolDriver(MuseDriver):
     async def health(self) -> dict[str, Any]:
         return {
             "driver": self.name,
+            "ok": True,
             "accounts": len(self._accounts),
             "connected": sum(1 for s in self._accounts.values()
                              if s.client is not None and s.client.alive),

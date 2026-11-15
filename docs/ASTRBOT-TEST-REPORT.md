@@ -19,7 +19,7 @@
 | Agent / 工具调用 | ✅ 通过 | 扁平 JSON Planner → 标准 OpenAI `tool_calls`；工具结果续接、流式工具调用均验证 |
 | AstrBot（QQ）亲和性 | ✅ 通过 | `x-astrbot-conversation-id`、昵称替换、热线程复用、Persona、工具循环、SSE 均验证 |
 | 会话续期（keepalive） | ✅ 通过 | 修复 `httpx` 不走代理导致的 ConnectError；`/admin/accounts/{id}/renew` 返回 VM `RUNNING` |
-| 回归测试 | ✅ 通过 | `pytest` 213 passed；`ruff check src tests` 通过 |
+| 回归测试 | ✅ 通过 | `pytest` 214 passed；`ruff check src tests` 通过 |
 | 普通 OpenAI 客户端 | ✅ 通过 | 不带 AstrBot 头的非流式/流式请求行为不变；带 system 消息时自动走 Persona bridge |
 | 纯协议驱动（Noise） | ✅ 通过 | 逐字流、线程隔离/续接、图片/视频、工具调用均实测 |
 

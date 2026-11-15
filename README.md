@@ -46,7 +46,7 @@ The project focuses on **clean engineering and easy collaboration**:
 
 ## Status
 
-> **Current**: 213 tests pass locally (mock driver, no network). The browser and Noise protocol drivers are live-tested against a real muse.ai account; the protocol driver is the recommended transport.
+> **Current**: 214 tests pass locally (mock driver, no network). The browser and Noise protocol drivers are live-tested against a real muse.ai account; the protocol driver is the recommended transport.
 
 | Module | Status | Notes |
 |---|---|---|

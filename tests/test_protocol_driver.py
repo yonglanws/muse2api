@@ -169,3 +169,10 @@ async def test_protocol_image_item_uses_base64():
     item = client.calls[0]["items"][0]
     assert item["type"] == "image"
     assert base64.b64decode(item["data_base64"]).startswith(b"\x89PNG")
+
+
+async def test_protocol_health_is_ready():
+    driver = ProtocolDriver(Settings())
+    health = await driver.health()
+    assert health["ok"] is True
+    assert health["driver"] == "protocol"

@@ -46,7 +46,7 @@ muse2api 把 muse.ai 的聊天、文生图和文生视频能力变成标准的 O
 
 ## 状态
 
-> **当前**：本地 213 个测试通过（mock driver，无需网络）。浏览器 driver 和 Noise 协议 driver 已用真实 muse.ai 账号实测；推荐使用协议 driver。
+> **当前**：本地 214 个测试通过（mock driver，无需网络）。浏览器 driver 和 Noise 协议 driver 已用真实 muse.ai 账号实测；推荐使用协议 driver。
 
 | 模块 | 状态 | 备注 |
 |---|---|---|
