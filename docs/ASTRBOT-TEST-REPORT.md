@@ -3,7 +3,7 @@
 - 日期：2026-11-15
 - 版本：muse2api 0.5.0（原生协议驱动 + AstrBot 适配层）
 - 本地环境：Windows，AstrBot Desktop 4.29.4（`D:\AstrBot`），Python 3.12
-- 服务器环境：192.168.31.54，Docker，`muse2api-web:astrbot-0.4.1`
+- 服务器环境：192.168.31.54，Docker，`muse2api-web:protocol-0.5.0`（原浏览器镜像 `muse2api-web:astrbot-0.4.1` 保留回滚）
 - 账号：Muse 账号「慵懒午睡」（唯一账号）
 - 上游：muse.ai（Meta 的个人 AI Agent，不是普通 LLM）
 

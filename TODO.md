@@ -35,7 +35,7 @@ Priorities: **P0** must be done first · **P1** core feature · **P2** better ex
 | F1 | Stateless-by-default chat: new thread + full history per request | P2 | `drivers/browser/driver.py` | | Done |
 | F2 | Stateful tab reuse as explicit opt-in (non-empty `user` only) | P2 | `drivers/browser/driver.py` | | Done |
 | F3 | Multi-user guidance: raise `account_max_concurrency`, isolate by API key | P3 | `api/deps.py`, docs | | Done |
-| G1 | AstrBot / QQ adapter: persona prompt, conversation isolation, tool emulation, reply sanitizer | P1 | `core/astrbot.py`, `api/routes/chat.py` | | Done (0.4.1; live-tested) |
+| G1 | AstrBot / QQ adapter: persona prompt, conversation isolation, tool emulation, reply sanitizer | P1 | `core/astrbot.py`, `api/routes/chat.py` | | Done (0.4.1, extended 0.5.0; live-tested) |
 
 ---
 
