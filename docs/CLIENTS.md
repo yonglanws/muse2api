@@ -56,15 +56,60 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机�
 
 客户端把工具结果以 `role: "tool"` 发回来后，网关续接同一线程继续回答。流式请求返回 `delta.tool_calls`，`finish_reason` 为 `tool_calls`。
 
-## 参数支持（0.9.0）
+## 参数支持（0.10.0）
 
 | 参数 | 行为 |
 |---|---|
 | `response_format: {"type": "json_object"}` | 注入 JSON-only 指令块；产出剥掉代码围栏并用 `json.loads` 校验，不合格自动换线程重试（`MUSE2API_TOOL_RETRIES` 次），仍失败时返回原始文本 |
 | `response_format: {"type": "json_schema", ...}` | 同上，schema 摘要一并写进指令块 |
 | `stop`（字符串或列表，最多生效于纯文本路径） | 命中即在该序列前截断并结束流式；上游轮次同时被取消（不走完整个生成） |
-| `n > 1` | 非流式：并发独立补全，合并成多个 `choices`（临时线程，不共享会话）；流式：返回 400（诚实报错优于静默忽略） |
-| `temperature` / `top_p` / `max_tokens` / `presence_penalty` 等 | 接受但忽略——muse.ai 不暴露采样控制 |
+| `n > 1` | 非流式：并发独立补全，合并成多个 `choices`（临时线程，不共享会话）；流式：按到达序交错输出带 `index` 的 chunk（与 api.openai.com 一致），`stream_options.include_usage` 会追加 usage chunk |
+| `max_tokens` / `max_output_tokens` | 按 token 近似值（约 4 字符/token）截断输出，`finish_reason: "length"`（Responses：`status: "incomplete"`）——muse.ai 没有原生采样控制，截断是唯一能兑现上限的方式 |
+| `stream_options` | 仅在 `stream: true` 时有效；不带 stream 传会得到 400（与 OpenAI 一致） |
+| `temperature` / `top_p` / `presence_penalty` 等 | 接受但忽略——muse.ai 不暴露采样控制 |
+| 未知 `model` | 404 `model_not_found`（`param: "model"`），不再是静默回落默认模型；常用别名见 `/v1/models` 及 `gpt-4`、`gpt-3.5-turbo`、`o4-mini` 等 |
+
+## 错误与响应头（0.10.0）
+
+所有失败路径——路由不存在（404）、方法不对（405）、参数校验、鉴权、上游故障——都返回
+OpenAI 错误信封 `{"error": {"message", "type", "param", "code"}}`；每个响应都带
+`x-request-id`、`openai-version: 2020-10-01` 和 `openai-processing-ms`，SDK 的重试日志
+和错误解析与 api.openai.com 拿到的形状一致。
+
+## 文件与音频输入（0.10.0）
+
+chat completions 与 Responses 都接受附件，上传为 muse.ai 的 `file_ref` 附件——
+逆向实测（probe 17）Agent 会真的读取文件内容，并声称可用音频转录工具处理音频：
+
+```python
+resp = client.chat.completions.create(
+    model="muse-chat",
+    messages=[{"role": "user", "content": [
+        {"type": "text", "text": "附件里约定的暗号是什么？"},
+        {"type": "file", "file": {
+            "file_data": "data:text/plain;base64,..." ,  # 也支持 PDF 等任意 MIME
+            "filename": "notes.txt"}},
+    ]},
+])
+# Responses：input: [{"type": "input_file", "file_data": "data:...", "filename": "..."}]
+```
+
+音频用 `{"type": "input_audio", "input_audio": {"data": <base64>, "format": "wav"}}`。
+`file_id`（OpenAI 托管文件）不支持——请内联 `file_data`。
+
+## Responses API（0.10.0）
+
+`/v1/responses` 不再只是转发：
+
+- **有状态续聊**：响应默认存储（`data/responses.json`，TTL `MUSE2API_RESPONSE_TTL` 默认 7 天），
+  下一次请求带 `previous_response_id` 即自动续上整段对话；`store: false` 不落存储；
+  未知 id 返回 404（`param: "previous_response_id"`）。
+- **函数调用**：请求带 `tools`/`tool_choice` 时走与 chat completions 相同的规划器，
+  输出标准 `function_call` 项；`function_call` / `function_call_output` 可作为输入项回传续接；
+  流式有 `response.function_call_arguments.delta/done` 事件。
+- **完整事件序**：`output_text.done` / `content_part.done` 补齐，`max_output_tokens`
+  触发 `status: "incomplete"` + `response.incomplete` 事件。
+- `instructions` 走与 chat completions 相同的 system 注入链（托管规则 + 指令块）。
 
 ## 浏览器直连
 

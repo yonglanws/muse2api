@@ -23,11 +23,17 @@ async def test_sdk_responses_non_streaming(client, auth):
     token = auth["Authorization"].split(" ", 1)[1]
     sdk, http_client = _sdk_client(client, token)
     try:
-        resp = await sdk.responses.create(model="anything-at-all", input="sdk non-stream hello")
+        resp = await sdk.responses.create(model="gpt-4o", input="sdk non-stream hello")
         assert resp.object == "response"
         assert resp.status == "completed"
         assert "sdk non-stream hello" in resp.output_text
         assert resp.usage.total_tokens > 0
+        # Unknown models are rejected like the real API (0.10.0 parity).
+        try:
+            await sdk.responses.create(model="anything-at-all", input="x")
+            raise AssertionError("expected NotFoundError")
+        except Exception as exc:
+            assert type(exc).__name__ == "NotFoundError"
     finally:
         await http_client.aclose()
 
@@ -50,7 +56,7 @@ async def test_sdk_responses_streaming(client, auth):
     token = auth["Authorization"].split(" ", 1)[1]
     sdk, http_client = _sdk_client(client, token)
     try:
-        async with sdk.responses.stream(model="anything-at-all", input="sdk stream hello") as stream:
+        async with sdk.responses.stream(model="gpt-4o", input="sdk stream hello") as stream:
             async for _event in stream:
                 pass
             final = await stream.get_final_response()

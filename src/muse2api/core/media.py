@@ -155,7 +155,7 @@ async def load_image_ref(ref: str, *, timeout: float = 20.0) -> tuple[bytes, str
         try:
             return base64.b64decode(payload), mime
         except ValueError as exc:
-            raise InvalidRequest("invalid base64 image data") from exc
+            raise InvalidRequest("invalid base64 attachment data") from exc
     if ref.startswith(("http://", "https://")):
         return await _fetch_public_image(ref, timeout=timeout)
     try:

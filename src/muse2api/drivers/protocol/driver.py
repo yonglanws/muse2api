@@ -466,7 +466,13 @@ class ProtocolDriver(MuseDriver):
         for index, image in enumerate(images):
             ext = mimetypes.guess_extension(image.mime) or ".png"
             filename = f"reference-{index + 1}{ext}"
-            if len(image.data) >= 8 * 1024 * 1024:
+            if not image.mime.startswith("image/"):
+                # Non-image attachments (documents, audio, ...) always travel as
+                # file_ref items: probe 17 verified the agent reads a text/plain
+                # file_ref and answers about its content. The inline {"type":
+                # "image"} item is only correct for real images.
+                items.append(await client.upload_file_ref(image.data, image.mime, filename))
+            elif len(image.data) >= 8 * 1024 * 1024:
                 items.append(await client.upload_file_ref(image.data, image.mime, filename))
             else:
                 items.append({

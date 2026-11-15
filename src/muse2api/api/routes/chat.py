@@ -51,6 +51,9 @@ class _Plan:
     tool_continuation: bool = False
     stop: list[str] | None = None
     json_directive: str | None = None
+    # max_tokens mapped to an approximate character cap (muse.ai exposes no
+    # sampling control; truncation is the only honest way to honor the limit).
+    max_chars: int | None = None
 
 
 _JSON_DIRECTIVE = (
@@ -87,6 +90,18 @@ def _stop_list(stop) -> list[str] | None:
     if isinstance(stop, list):
         seqs = [s for s in stop if isinstance(s, str) and s]
         return seqs or None
+    return None
+
+
+def _cap_from_max_tokens(max_tokens: int | None) -> int | None:
+    """``max_tokens`` (a completion-token cap) → an approximate character cap.
+
+    _approx_tokens counts len//4, so limit*4 characters keeps the reported
+    token count within the budget. Applies to plain-text replies only: cutting
+    a tool-call JSON mid-argument would corrupt it.
+    """
+    if max_tokens and max_tokens > 0:
+        return max_tokens * 4
     return None
 
 
@@ -177,6 +192,7 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
     # call anyway, so the directive would only corrupt it.
     json_directive = None if tools else _json_directive(body.response_format)
     stop = _stop_list(body.stop)
+    cap = _cap_from_max_tokens(body.max_tokens)
 
     if tools:
         plan = system_prompt.build_tool_prompt(
@@ -199,6 +215,7 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
             force_tool=force_tool,
             tool_continuation=plan.tool_continuation,
             stop=stop,
+            max_chars=cap,
         )
 
     system = system_prompt.extract_system_prompt(messages)
@@ -217,6 +234,7 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
             tool_continuation=plan.tool_continuation,
             stop=stop,
             json_directive=json_directive,
+            max_chars=cap,
         )
 
     flat = flatten_messages(messages)
@@ -234,6 +252,7 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
         tools=None,
         stop=stop,
         json_directive=json_directive,
+        max_chars=cap,
     )
 
 
@@ -385,8 +404,12 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
         plan.prompt = f"{plan.json_directive}\n\n{plan.prompt}"
         if plan.followup_prompt:
             plan.followup_prompt = f"{plan.json_directive}\n\n{plan.followup_prompt}"
-    if body.stream and (body.n or 1) > 1:
-        raise InvalidRequest("n > 1 is not supported with stream=true")
+    if not body.stream and body.stream_options is not None:
+        raise InvalidRequest("stream_options requires stream=true", param="stream_options")
+    # Buffered replies (tools / JSON mode) cannot be streamed verbatim: planner
+    # JSON has to be rewritten into tool_calls before any chunk is emitted.
+    buffered = bool(plan.tools) or bool(plan.json_directive)
+    n = body.n or 1
 
     images = [InputImage(*(await load_image_ref(ref))) for ref in plan.images]
     cancel = asyncio.Event()
@@ -411,7 +434,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
     created = int(time.time())
     model_name = body.model or spec.id
 
-    if not body.stream and (body.n or 1) > 1:
+    if n > 1:
         # Independent completions: ephemeral threads so the pool spreads them
         # over the connection pool instead of queueing on one conversation.
         async def one() -> str:
@@ -419,9 +442,211 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
             text = await _collect(svc.gateway.chat_stream(copy))
             return await _retry_nonstream(text, plan, copy, svc, messages)
 
-        texts = list(await asyncio.gather(*[one() for _ in range(body.n or 1)]))
+    if not body.stream and n > 1:
+        texts = list(await asyncio.gather(*[one() for _ in range(n)]))
         return _completion(plan, "", completion_id, created, model_name,
                            choices_texts=texts)
+
+    if body.stream and n > 1:
+        def chunk_at(index: int, delta: dict, finish: str | None = None) -> dict:
+            return {"id": completion_id, "object": "chat.completion.chunk",
+                    "created": created, "model": model_name,
+                    "system_fingerprint": "muse2api",
+                    "choices": [{"index": index, "delta": delta,
+                                 "finish_reason": finish}]}
+
+        if buffered:
+            # Buffer each choice fully (planner JSON rewritten, JSON extracted),
+            # then replay it as standard SSE chunks.
+            texts = list(await asyncio.gather(*[one() for _ in range(n)]))
+
+            async def buffered_multi_events() -> AsyncIterator[bytes]:
+                try:
+                    for index, one_text in enumerate(texts):
+                        message, finish = _message_from_text(plan, one_text)
+                        if message.get("tool_calls"):
+                            calls = message["tool_calls"]
+                            yield _sse(chunk_at(index, {"role": "assistant", "content": None,
+                                                        "tool_calls": [
+                                                            {"index": j, "id": call["id"],
+                                                             "type": "function",
+                                                             "function": {"name": call["function"]["name"],
+                                                                          "arguments": ""}}
+                                                            for j, call in enumerate(calls)]}))
+                            for j, call in enumerate(calls):
+                                yield _sse(chunk_at(index, {"tool_calls": [
+                                    {"index": j, "function": {
+                                        "arguments": call["function"]["arguments"]}}]}))
+                        elif message.get("content"):
+                            yield _sse(chunk_at(index, {"role": "assistant",
+                                                        "content": message["content"]}))
+                        yield _sse(chunk_at(index, {}, finish))
+                    if (body.stream_options or {}).get("include_usage"):
+                        usage = _usage(plan.prompt, "".join(texts))
+                        yield _sse({"id": completion_id, "object": "chat.completion.chunk",
+                                    "created": created, "model": model_name,
+                                    "system_fingerprint": "muse2api", "choices": [],
+                                    "usage": usage})
+                except Muse2APIError as exc:
+                    yield _sse(exc.to_body())
+                except Exception:  # noqa: BLE001
+                    log.exception("multi-choice stream crashed")
+                    yield _sse({"error": {"message": "internal error",
+                                          "type": "server_error",
+                                          "param": None, "code": "internal_error"}})
+                yield _sse("[DONE]")
+
+            return StreamingResponse(buffered_multi_events(),
+                                     media_type="text/event-stream",
+                                     headers={"Cache-Control": "no-cache",
+                                              "X-Accel-Buffering": "no"})
+
+        # Plain text: true interleaved streaming. One ephemeral upstream turn
+        # per choice; deltas are forwarded as they arrive, tagged with the
+        # choice index, exactly like api.openai.com's multi-choice streams.
+        streams = [svc.gateway.chat_stream(replace(req, conversation_hint=None,
+                                                   cancel=asyncio.Event()))
+                   for _ in range(n)]
+        firsts: list[str | None] = [None] * n
+
+        if svc.settings.stream_heartbeat_interval <= 0:
+            # Fail fast: a dead account surfaces as an HTTP error, not a broken
+            # event stream. (Heartbeat mode keeps the 200 immediate and waits
+            # inside the generator, matching the single-choice behavior.)
+            async def _first_of(s) -> str | None:
+                try:
+                    return await anext(s)
+                except StopAsyncIteration:
+                    return ""
+
+            firsts = list(await asyncio.gather(*[_first_of(s) for s in streams]))
+
+        async def multi_events() -> AsyncIterator[bytes]:
+            q: asyncio.Queue = asyncio.Queue()
+            texts: list[str] = [""] * n
+            interval = svc.settings.stream_heartbeat_interval
+            tasks: list[asyncio.Task] = []
+            try:
+                if any(f is None for f in firsts):
+                    pendings = {i: asyncio.ensure_future(anext(s))
+                                for i, s in enumerate(streams) if firsts[i] is None}
+                    try:
+                        while pendings:
+                            done, _ = await asyncio.wait(
+                                set(pendings.values()),
+                                timeout=interval if interval > 0 else None)
+                            if not done and interval > 0:
+                                yield b": keepalive\n\n"
+                                continue
+                            for i, task in list(pendings.items()):
+                                if task in done:
+                                    try:
+                                        firsts[i] = task.result()
+                                    except StopAsyncIteration:
+                                        firsts[i] = ""
+                                    del pendings[i]
+                    finally:
+                        for task in pendings.values():
+                            if not task.done():
+                                task.cancel()
+
+                async def pump(i: int, stream, first: str | None) -> None:
+                    produced = first or ""
+                    try:
+                        stop_idx = _first_stop_index(produced, plan.stop)
+                        if stop_idx is not None:
+                            produced = produced[:stop_idx]
+                            texts[i] = produced
+                            await q.put(("delta", i, produced))
+                            await q.put(("end", i, "stop"))
+                            return
+                        if plan.max_chars is not None and len(produced) > plan.max_chars:
+                            produced = produced[:plan.max_chars]
+                            texts[i] = produced
+                            await q.put(("delta", i, produced))
+                            await q.put(("end", i, "length"))
+                            return
+                        texts[i] = produced
+                        if produced:
+                            await q.put(("delta", i, produced))
+                        while True:
+                            try:
+                                delta = await anext(stream)
+                            except StopAsyncIteration:
+                                await q.put(("end", i, None))
+                                return
+                            produced += delta
+                            stop_idx = _first_stop_index(produced, plan.stop)
+                            if stop_idx is not None:
+                                already = len(produced) - len(delta)
+                                tail = produced[already:stop_idx]
+                                if tail:
+                                    texts[i] += tail
+                                    await q.put(("delta", i, tail))
+                                await q.put(("end", i, "stop"))
+                                return
+                            if plan.max_chars is not None and len(produced) > plan.max_chars:
+                                already = len(produced) - len(delta)
+                                tail = produced[already:plan.max_chars]
+                                if tail:
+                                    texts[i] += tail
+                                    await q.put(("delta", i, tail))
+                                await q.put(("end", i, "length"))
+                                return
+                            texts[i] += delta
+                            await q.put(("delta", i, delta))
+                    except asyncio.CancelledError:
+                        raise
+                    except Muse2APIError as exc:
+                        await q.put(("error", i, exc))
+                    except Exception:  # noqa: BLE001
+                        log.exception("choice %d stream crashed", i)
+                        await q.put(("error", i, Muse2APIError("internal error")))
+                    finally:
+                        with contextlib.suppress(Exception):
+                            await stream.aclose()
+
+                tasks[:] = [asyncio.create_task(pump(i, s, f))
+                            for i, (s, f) in enumerate(zip(streams, firsts, strict=False))]
+                for i in range(n):
+                    yield _sse(chunk_at(i, {"role": "assistant", "content": ""}))
+                pending = n
+                while pending:
+                    kind, i, payload = await q.get()
+                    if kind == "delta":
+                        yield _sse(chunk_at(i, {"content": payload}))
+                    elif kind == "end":
+                        yield _sse(chunk_at(i, {}, payload or "stop"))
+                        pending -= 1
+                    else:  # one choice failed; siblings keep streaming
+                        yield _sse(payload.to_body())
+                        pending -= 1
+                if (body.stream_options or {}).get("include_usage"):
+                    usage = _usage(plan.prompt, "".join(texts))
+                    yield _sse({"id": completion_id, "object": "chat.completion.chunk",
+                                "created": created, "model": model_name,
+                                "system_fingerprint": "muse2api", "choices": [],
+                                "usage": usage})
+            except Muse2APIError as exc:
+                yield _sse(exc.to_body())
+            except Exception:  # noqa: BLE001
+                log.exception("multi-choice stream crashed")
+                yield _sse({"error": {"message": "internal error",
+                                      "type": "server_error",
+                                      "param": None, "code": "internal_error"}})
+            finally:
+                # A client disconnect closes this generator; the pumps must be
+                # torn down so the upstream turns get cancelled.
+                for t in tasks:
+                    t.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            yield _sse("[DONE]")
+
+        return StreamingResponse(multi_events(),
+                                 media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
 
     stream = svc.gateway.chat_stream(req)
 
@@ -512,13 +737,15 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
             if (body.stream_options or {}).get("include_usage"):
                 usage = _usage(plan.prompt, produced)
                 yield _sse({"id": completion_id, "object": "chat.completion.chunk",
-                            "created": created, "model": model_name, "choices": [],
+                            "created": created, "model": model_name,
+                            "system_fingerprint": "muse2api", "choices": [],
                             "usage": usage})
         except Muse2APIError as exc:
             yield _sse(exc.to_body())
         except Exception:  # noqa: BLE001
             log.exception("stream crashed")
-            yield _sse({"error": {"message": "internal error", "type": "server_error"}})
+            yield _sse({"error": {"message": "internal error", "type": "server_error",
+                                  "param": None, "code": "internal_error"}})
         finally:
             cancel.set()
             await stream.aclose()
@@ -543,11 +770,15 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                     if not pending.done():
                         pending.cancel()
             produced = first or ""
+            finish_reason = "stop"
             stop_idx = _first_stop_index(produced, plan.stop)
             if stop_idx is not None:
                 produced = produced[:stop_idx]
+            elif plan.max_chars is not None and len(produced) > plan.max_chars:
+                produced = produced[:plan.max_chars]
+                finish_reason = "length"
             yield _sse(chunk({"role": "assistant", "content": produced}))
-            finished_early = stop_idx is not None
+            finished_early = stop_idx is not None or finish_reason == "length"
             if not finished_early:
                 async for delta in stream:
                     produced += delta
@@ -560,19 +791,30 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                         tail = produced[already:stop_idx] if stop_idx > already else ""
                         if tail:
                             yield _sse(chunk({"content": tail}))
+                        produced = produced[:stop_idx]
+                        break
+                    if plan.max_chars is not None and len(produced) > plan.max_chars:
+                        already = len(produced) - len(delta)
+                        tail = produced[already:plan.max_chars]
+                        if tail:
+                            yield _sse(chunk({"content": tail}))
+                        produced = produced[:plan.max_chars]
+                        finish_reason = "length"
                         break
                     yield _sse(chunk({"content": delta}))
-            yield _sse(chunk({}, "stop"))
+            yield _sse(chunk({}, finish_reason))
             if (body.stream_options or {}).get("include_usage"):
                 usage = _usage(plan.prompt, produced)
                 yield _sse({"id": completion_id, "object": "chat.completion.chunk",
-                            "created": created, "model": model_name, "choices": [],
+                            "created": created, "model": model_name,
+                            "system_fingerprint": "muse2api", "choices": [],
                             "usage": usage})
         except Muse2APIError as exc:
             yield _sse(exc.to_body())
         except Exception:  # noqa: BLE001
             log.exception("stream crashed")
-            yield _sse({"error": {"message": "internal error", "type": "server_error"}})
+            yield _sse({"error": {"message": "internal error", "type": "server_error",
+                                  "param": None, "code": "internal_error"}})
         finally:
             cancel.set()
             await stream.aclose()
@@ -612,8 +854,11 @@ def _message_from_text(plan: _Plan, text: str) -> tuple[dict, str]:
             else:
                 message = {"role": "assistant", "content": _clean_text(text)}
     else:
-        message = {"role": "assistant",
-                   "content": _apply_stop(_clean_text(text), plan.stop)}
+        content = _apply_stop(_clean_text(text), plan.stop)
+        if plan.max_chars is not None and len(content) > plan.max_chars:
+            content = content[:plan.max_chars]
+            finish = "length"
+        message = {"role": "assistant", "content": content}
     return message, finish
 
 

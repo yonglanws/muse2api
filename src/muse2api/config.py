@@ -51,6 +51,10 @@ class Settings(BaseSettings):
         default=14, description="Days generated media files are kept in data/media. "
         "0 disables automatic cleanup."
     )
+    response_ttl: int = Field(
+        default=7 * 86400, description="Seconds a stored Responses API conversation "
+        "stays continuable via previous_response_id (data/responses.json)."
+    )
 
     # --- upstream driver ---
     driver: DriverName = "mock"
@@ -194,6 +198,10 @@ class Settings(BaseSettings):
     @property
     def tasks_file(self) -> Path:
         return self.data_dir / "tasks.json"
+
+    @property
+    def responses_file(self) -> Path:
+        return self.data_dir / "responses.json"
 
     @property
     def key_file(self) -> Path:

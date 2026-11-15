@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,7 +14,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__
 from .accounts import AccountStatus
@@ -54,6 +56,7 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await services.pool.load()
         await services.tasks.load()
+        services.responses.load()
         await services.keys.load()
         await services.requests.open()
         await services.requests.prune(settings.request_log_retention_days)
@@ -89,12 +92,44 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
     async def _muse_error(_: Request, exc: Muse2APIError) -> JSONResponse:
         return JSONResponse(exc.to_body(), status_code=exc.status_code)
 
+    def _param_name(loc: tuple) -> str | None:
+        """Pydantic loc → OpenAI ``param``: ('body','messages',0,'content')
+        becomes ``messages[0].content``."""
+        parts = [part for part in loc[1:] if part != "body"] if loc and loc[0] == "body" else loc
+        if not parts:
+            return None
+        out = str(parts[0])
+        for part in parts[1:]:
+            out += f"[{part}]" if isinstance(part, int) else f".{part}"
+        return out
+
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
-        msg = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+        errors = exc.errors()
+        msg = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in errors)
         return JSONResponse(
-            {"error": {"message": msg, "type": "invalid_request_error", "code": "invalid_request"}},
+            {"error": {"message": msg, "type": "invalid_request_error",
+                       "param": _param_name(errors[0]["loc"]) if errors else None,
+                       "code": "invalid_request"}},
             status_code=400,
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # FastAPI's default body is {"detail": ...}; api.openai.com describes
+        # routing mistakes in the same envelope as every other error.
+        if exc.status_code == 404:
+            message = f"Invalid URL ({request.method} {request.url.path})"
+        elif exc.status_code == 405:
+            message = (f"Not allowed to {request.method} on {request.url.path}. "
+                       f"(HTTP status code: 405)")
+        else:
+            message = str(exc.detail)
+        return JSONResponse(
+            {"error": {"message": message, "type": "invalid_request_error",
+                       "param": None, "code": None}},
+            status_code=exc.status_code,
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(Exception)
@@ -125,7 +160,34 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
         prefixes=("/v1/",),
         origins=_parse_cors_origins(settings.cors_origins),
     )
+    app.add_middleware(OpenAIHeadersMiddleware)
     return app
+
+
+class OpenAIHeadersMiddleware:
+    """Stamp the headers api.openai.com always sends: a request id for support
+    and SDK retry logs, the API version, and processing latency (measured to
+    the response head, as upstream does)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+
+        async def stamp(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = message.setdefault("headers", [])
+                headers.append((b"x-request-id", uuid.uuid4().hex.encode()))
+                headers.append((b"openai-version", b"2020-10-01"))
+                ms = int((time.perf_counter() - started) * 1000)
+                headers.append((b"openai-processing-ms", str(ms).encode()))
+            await send(message)
+
+        await self.app(scope, receive, stamp)
 
 
 def _parse_cors_origins(raw: str) -> list[str]:

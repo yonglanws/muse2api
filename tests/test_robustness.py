@@ -340,12 +340,34 @@ def test_n_gt_1_returns_independent_choices(tmp_path):
     assert all(req.conversation_hint is None for req in driver.requests)
 
 
-def test_stream_n_gt_1_is_rejected(tmp_path):
-    client = _stub_client(tmp_path, StubDriver("hello"))
-    r = client.post("/v1/chat/completions", headers=_auth(), json={
-        "messages": [{"role": "user", "content": "hi"}], "n": 2, "stream": True})
-    assert r.status_code == 400
-    assert r.json()["error"]["type"] == "invalid_request_error"
+def test_stream_n_gt_1_streams_independent_choices(tmp_path):
+    driver = StubDriver("hello")
+    client = _stub_client(tmp_path, driver)
+    with client.stream("POST", "/v1/chat/completions", headers=_auth(), json={
+            "messages": [{"role": "user", "content": "hi"}], "n": 2, "stream": True,
+            "stream_options": {"include_usage": True}}) as resp:
+        assert resp.status_code == 200
+        lines = [ln[6:] for ln in resp.iter_lines() if ln.startswith("data: ")
+                 and ln != "data: [DONE]"]
+    chunks = [json.loads(ln) for ln in lines if ln != ""]
+    by_index: dict[int, str] = {}
+    finishes = []
+    usage_chunks = [c for c in chunks if c["choices"] == []]
+    for c in chunks:
+        if not c["choices"]:
+            continue
+        choice = c["choices"][0]
+        if choice["delta"].get("content"):
+            by_index.setdefault(choice["index"], "")
+            by_index[choice["index"]] += choice["delta"]["content"]
+        if choice["finish_reason"]:
+            finishes.append((choice["index"], choice["finish_reason"]))
+    assert by_index == {0: "hello", 1: "hello"}
+    assert sorted(finishes) == [(0, "stop"), (1, "stop")]
+    assert len(usage_chunks) == 1 and usage_chunks[0]["usage"]["total_tokens"] > 0
+    assert usage_chunks[0]["system_fingerprint"] == "muse2api"
+    # Ephemeral threads: the pool must see hint=None for both choices.
+    assert all(req.conversation_hint is None for req in driver.requests)
 
 
 def test_envelope_carries_system_fingerprint(tmp_path):

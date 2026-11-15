@@ -14,6 +14,7 @@ from ..drivers.base import MuseDriver
 from ..drivers.registry import create_driver
 from .gateway import Gateway
 from .request_log import RequestLog, current_record
+from .response_store import ResponseStore
 from .tasks import Task, TaskManager
 
 
@@ -24,6 +25,7 @@ class Services:
     pool: AccountPool
     gateway: Gateway
     tasks: TaskManager
+    responses: ResponseStore
     media: MediaStore
     matting: Matting
     keys: KeyStore
@@ -54,6 +56,7 @@ class Services:
             pool=pool,
             gateway=Gateway(pool, driver, max_failover=settings.max_failover),
             tasks=TaskManager(settings.tasks_file, on_finish=record_outcome),
+            responses=ResponseStore(settings.responses_file, ttl_seconds=settings.response_ttl),
             media=MediaStore(settings.media_dir),
             matting=Matting(settings.matting_model),
             keys=KeyStore(settings.keys_file),

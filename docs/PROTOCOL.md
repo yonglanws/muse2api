@@ -93,6 +93,17 @@ MUSE2API_PROTOCOL_THREAD_TTL=21600
 
 `delta.message_done` 的 `status: "interrupted"` 被视为正常结束（部分文本就是答案）；只有其他失败状态才触发换号重试。图片/视频轮次同样在调用方消失时取消上游生成。
 
+### 3.3 附件通道与 probe 17（0.10.0）
+
+图片一直以 item 发送：小于 8 MB 内联 `{"type": "image", mime_type, data_base64, filename}`，更大走 `fs.write` 上传为 `{"type": "file_ref", mime_type, path, filename}`。probe 17（真实 muse.ai）验证了 file_ref 通道对**任意 MIME** 都有效：
+
+| 场景 | 结果 |
+|---|---|
+| `text/plain` file_ref（内含指定密语）+ 追问 | Agent 立即读取文件并**精确回答密语**（`XYZZY-42`） |
+| `audio/wav` file_ref + 追问 | 请求被接受；Agent 回答可用 `audio/transcription` 工具处理音频 |
+
+因此 0.10.0 把 OpenAI 的 `file` / `input_file` / `input_audio` 内容部件映射为同样的附件链路：非图片 MIME 一律 `upload_file_ref` → file_ref item（扩展名由 MIME 推导）。这让 API 层获得了网页端"上传附件"的全部能力。
+
 ## 4. 系统提示词
 
 muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条用户消息。0.7.0 起网关用两层机制逼近真正的 system 语义。
@@ -183,6 +194,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 | `MUSE2API_MAX_PROMPT_CHARS` | `18000` | 系统指令与历史的最大长度 |
 | `MUSE2API_TOOL_RETRIES` | `2` | Planner 被拒绝时的重试次数 |
 | `MUSE2API_NATIVE_HARNESS` | `true` | 在账号 VM 的 IDENTITY/SOUL/AGENTS.md 维护托管规则（备份在 `data/harness_backup/`，可用 `/admin/harness` 还原） |
+| `MUSE2API_RESPONSE_TTL` | `604800` | Responses API 存储的对话可被 `previous_response_id` 续聊的秒数（`data/responses.json`，上限 1000 条） |
 
 ## 8. 已知限制
 
@@ -199,7 +211,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 ## 9. 部署与回滚
 
 ```bash
-docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.9.0 .
+docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.10.0 .
 docker run -d --name muse2api-web \
   --restart unless-stopped \
   -p 18610:18610 \
@@ -213,7 +225,7 @@ docker run -d --name muse2api-web \
   -e MUSE2API_ACCOUNT_MAX_CONCURRENCY=12 \
   -e MUSE2API_KEEPALIVE_ENABLED=true \
   -e MUSE2API_EMULATE_TOOLS=true \
-  muse2api-web:protocol-0.9.0
+  muse2api-web:protocol-0.10.0
 ```
 
 回滚到浏览器驱动（保留旧容器）：

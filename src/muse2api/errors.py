@@ -9,15 +9,21 @@ class Muse2APIError(Exception):
     status_code: int = 500
     error_type: str = "server_error"
     code: str = "internal_error"
+    # Every OpenAI error body carries "param" (null, or the offending request field).
+    param: str | None = None
 
-    def __init__(self, message: str = "", *, code: str | None = None) -> None:
+    def __init__(self, message: str = "", *, code: str | None = None,
+                 param: str | None = None) -> None:
         super().__init__(message or self.__class__.__name__)
         self.message = message or self.__class__.__name__
         if code:
             self.code = code
+        if param:
+            self.param = param
 
     def to_body(self) -> dict[str, Any]:
-        return {"error": {"message": self.message, "type": self.error_type, "code": self.code}}
+        return {"error": {"message": self.message, "type": self.error_type,
+                          "param": self.param, "code": self.code}}
 
 
 # --- client side ---

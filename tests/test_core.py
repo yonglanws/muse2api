@@ -2,7 +2,7 @@ import pytest
 
 from muse2api.core.models import resolve_model
 from muse2api.core.prompt import flatten_messages, followup_text, message_turns
-from muse2api.errors import InvalidRequest
+from muse2api.errors import InvalidRequest, NotFound
 
 
 def test_single_user_message_verbatim():
@@ -56,10 +56,12 @@ def test_thread_url_ignores_the_new_thread_page():
 
 def test_resolve_model():
     assert resolve_model("gpt-4o", "chat").id == "muse-chat"
-    assert resolve_model("unknown", "image").id == "muse-image"
+    assert resolve_model("gpt-3.5-turbo", "chat").id == "muse-chat"
     assert resolve_model(None, "video").id == "muse-video"
     with pytest.raises(InvalidRequest):
         resolve_model("muse-image", "chat")
+    with pytest.raises(NotFound):
+        resolve_model("unknown", "chat")
 
 
 def test_media_prune_removes_only_expired_files(tmp_path):

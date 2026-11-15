@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..errors import InvalidRequest
+
 ROLE_LABELS = {
     "system": "System",
     "developer": "System",
@@ -23,7 +25,9 @@ ROLE_LABELS = {
 class FlatPrompt:
     text: str
     images: list[str] = field(default_factory=list)
-    """Image references (data URLs or http(s) URLs) found in the messages, in order."""
+    """Attachment references (data URLs or http(s) URLs) found in the messages,
+    in order. Images since 0.5; non-image files and audio since 0.10.0 (probe 17:
+    upstream reads file_ref attachments)."""
 
 
 def _content_to_text(content: Any, images: list[str]) -> str:
@@ -45,6 +49,25 @@ def _content_to_text(content: Any, images: list[str]) -> str:
                 ref = ref.get("url")
             if ref:
                 images.append(ref)
+        elif ptype in ("file", "input_file"):
+            # Probe 17: muse.ai reads non-image attachments sent as file_ref
+            # items (the agent answered a secret word from an uploaded .txt).
+            # Chat completions nest it under ``file``, Responses puts ``file_data``
+            # at the part level.
+            file_field = part.get("file") if isinstance(part.get("file"), dict) else {}
+            ref = file_field.get("file_data") or part.get("file_data")
+            if not ref and file_field.get("file_id"):
+                raise InvalidRequest(
+                    "file_id is not supported: pass the file inline as "
+                    "file.file_data (a data: URL)", param="messages")
+            if ref:
+                images.append(str(ref))
+        elif ptype in ("input_audio", "audio"):
+            audio = part.get("input_audio") or {}
+            data = audio.get("data") if isinstance(audio, dict) else None
+            fmt = (audio.get("format") if isinstance(audio, dict) else None) or "wav"
+            if data:
+                images.append(f"data:audio/{fmt};base64,{data}")
     return "\n".join(p for p in parts if p)
 
 

@@ -4,15 +4,18 @@
 
 muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/completions`、`/v1/images/generations`、`/v1/videos` 这些熟悉的 OpenAI 接口，对内通过原生 Noise 协议连接 muse.ai 的网页 Agent。它不模拟网页点击，也不把提示词简单拼在聊天框里，而是直接使用 muse.ai 自己的会话、线程和客户端工具通道。
 
-这一版是 **0.9.0**。
+这一版是 **0.10.0**。
 
 ## 先说结论
 
 - **一个地址就能接入**：把 `base_url` 指向 `http://<host>:18610/v1`，OpenAI SDK、LobeChat、Cherry Studio 或自研 Agent 都能用。浏览器端应用也能直接调（`/v1/*` 默认 `Access-Control-Allow-Origin: *`，与 api.openai.com 一致）。
+- **错误面与响应头也对齐**：404/405/校验错误一律 OpenAI 错误信封（含 `param`），响应带 `x-request-id` / `openai-version` / `openai-processing-ms`——SDK 的重试与错误处理拿到的形状和 api.openai.com 一致。
+- **文件与音频附件**：`file` / `input_audio` 内容部件会被上传为上游的 `file_ref` 附件，Agent 真的会读取文件内容（逆向实测：从上传的 txt 里精确读出指定密语）。
+- **Responses API 是完整的**：`previous_response_id` 有状态续聊（重启不丢）、`tools`/`tool_choice` 函数调用、完整事件序。
 - **不需要 Chromium**：推荐 `MUSE2API_DRIVER=protocol`，直接用 Noise + `chat.stream` 通信，镜像约 194 MB。
 - **单账号真高并发**：逆向实测上游按 VM 并行执行轮次（单连接 12 条并发流零错误），网关用连接池 + 预热把这份并发能力完整交给调用方，默认单账号 12 并发。
 - **异常路径也干净**：客户端断开、超时、换号重试都会真正取消上游正在执行的轮次（逆向确认 `/chat/cancel` 生效），被中止的线程直接丢弃，不会把半截回复泄漏进下一轮。
-- **参数真的执行**：`response_format`（json_object / json_schema）、`stop`、`n>1` 不再是摆设；错误永远返回 OpenAI 错误信封。
+- **参数真的执行**：`response_format`（json_object / json_schema）、`stop`、`n>1`（含流式多选）、`max_tokens`（截断并返回 `finish_reason: "length"`）不再是摆设；错误永远返回 OpenAI 错误信封。
 - **系统提示词生效**：`system` / `developer` 消息会被整理成独立指令块，再和当前用户消息一起发送。
 - **工具调用真的执行**：OpenAI `tools` 会被注册成 muse.ai 的原生客户端命令，Agent 在自己的工具循环里调用，再还原成标准 `tool_calls`。
 - **多账号、多会话**：账号池负责调度、冷却、故障转移；会话按 API Key 隔离，热线程复用降低首字延迟。
@@ -218,6 +221,7 @@ curl http://localhost:18610/v1/videos \
 | `MUSE2API_STREAM_HEARTBEAT_INTERVAL` | `0` | SSE 心跳间隔，`0` 关闭 |
 | `MUSE2API_MEDIA_RETENTION_DAYS` | `14` | 媒体保留天数 |
 | `MUSE2API_REQUEST_LOG_RETENTION_DAYS` | `14` | 请求日志保留天数 |
+| `MUSE2API_RESPONSE_TTL` | `604800` | Responses API 会话可被 `previous_response_id` 续聊的秒数（`data/responses.json`） |
 
 推荐的生产配置：
 
@@ -271,7 +275,7 @@ docker run -d --name muse2api \
 4. 没有 `system` 消息、只用普通用户文本描述身份时，直接问"你是谁"仍可能自称 Muse——这与 OpenAI 语义一致（user 弱于 system）。
 5. 历史图片只保留占位符，跨线程依赖完整图片细节时可能丢失。
 6. 单账号并发已按上游实测放开（默认 12，逆向验证单连接 12 条并行流无错误）；要更高并发仍建议增加账号——一个 muse.ai 账号运行在一台 VM 上，并发高时各轮次共享同一台 VM 的算力与配额。
-7. `temperature` / `top_p` / `max_tokens` 等采样参数被接受但忽略——muse.ai 不暴露采样控制（逆向确认）。`response_format` 的 JSON 模式靠指令块 + 解析校验执行，极端情况下可能返回未通过校验的原始文本。
+7. `temperature` / `top_p` 等采样参数被接受但忽略——muse.ai 不暴露采样控制（逆向确认）。`max_tokens` 由网关按近似 token 数截断并返回 `finish_reason: "length"`，上游没有原生停止机制。`response_format` 的 JSON 模式靠指令块 + 解析校验执行，极端情况下可能返回未通过校验的原始文本。`file_id` 引用（OpenAI 托管文件）不支持，附件请内联 `file_data`。
 
 ## 来路
 

@@ -255,9 +255,9 @@ def test_responses_items_and_instructions(client, auth, monkeypatch):
                   {"type": "message", "role": "assistant", "content": "noon"},
                   {"role": "user", "content": "and date"}]})
     assert r.status_code == 200
-    # instructions folded in as a System block, turns preserved.
-    assert "[System]\nbe terse" in seen[0].prompt
-    assert seen[0].turns[0] == ("system", "be terse")
+    # 0.10.0: instructions ride the real system framing (same as chat completions).
+    assert seen[0].system_prompt == "be terse"
+    assert seen[0].turns[0] == ("user", "what time")  # system rides system_prompt
 
 
 def test_responses_stream(client, auth):
@@ -269,9 +269,11 @@ def test_responses_stream(client, auth):
     types = [e["type"] for e in events]
     assert types[:4] == ["response.created", "response.in_progress",
                         "response.output_item.added", "response.content_part.added"]
-    assert all(t == "response.output_text.delta" for t in types[4:-2])
-    assert len(types) > 6
-    assert types[-2:] == ["response.output_item.done", "response.completed"]
+    deltas = [t for t in types[4:-4]]
+    assert deltas and all(t == "response.output_text.delta" for t in deltas)
+    # 0.10.0: the done events come before output_item.done.
+    assert types[-4:] == ["response.output_text.done", "response.content_part.done",
+                          "response.output_item.done", "response.completed"]
     first, last = events[0], events[-1]
     assert first["response"]["status"] == "in_progress"
     assert first["response"]["output"] == []
@@ -279,6 +281,8 @@ def test_responses_stream(client, auth):
     assert final["status"] == "completed"
     text = "".join(e["delta"] for e in events if e["type"] == "response.output_text.delta")
     assert text == final["output"][0]["content"][0]["text"]
+    done_ev = next(e for e in events if e["type"] == "response.output_text.done")
+    assert done_ev["text"] == text
     assert "stream me" in text
     seqs = [e["sequence_number"] for e in events]
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
@@ -287,11 +291,19 @@ def test_responses_stream(client, auth):
 def test_responses_rejects_bad_input(client, auth):
     empty = client.post("/v1/responses", headers=auth, json={"input": "  "})
     assert empty.status_code == 400
+    # 0.10.0: function_call / function_call_output items are supported — they
+    # become chat assistant-tool_calls / role-tool messages.
     tools = client.post("/v1/responses", headers=auth, json={
-        "input": [{"type": "function_call", "name": "get_weather",
-                   "arguments": "{}"}]})
-    assert tools.status_code == 400
-    assert "function calling" in tools.json()["error"]["message"]
+        "input": [{"type": "function_call", "call_id": "call_1", "name": "get_weather",
+                   "arguments": "{}"},
+                  {"type": "function_call_output", "call_id": "call_1",
+                   "output": "sunny, 26C"},
+                  {"role": "user", "content": "summarize"}]})
+    assert tools.status_code == 200
+    unsupported = client.post("/v1/responses", headers=auth, json={
+        "input": [{"type": "reasoning", "summary": []}]})
+    assert unsupported.status_code == 400
+    assert unsupported.json()["error"]["param"] == "input"
 
 
 def _capture_image_requests(client, monkeypatch) -> list:
