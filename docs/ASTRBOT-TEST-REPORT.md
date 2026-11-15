@@ -55,6 +55,21 @@ ProviderOpenAIOfficial(
 
 这一步覆盖了 AstrBot 的 Provider 请求构造、`system_prompt`、`tools`、`tool_choice`、工具结果消息、流式累积和 `LLMResponse` 解析。
 
+### 2.1.1 运行中的本机 AstrBot 注册与自检
+
+本机正在运行的 AstrBot 4.29.4（`127.0.0.1:6185`）已通过 AstrBot 的 Provider API 注册：
+
+- Provider Source：`muse2api` → `http://192.168.31.54:18610/v1`
+- Provider：`muse2api/gpt-4o`（model `gpt-4o`，modalities: text/image/tool_use）
+- AstrBot 的 `/api/v1/providers/test` 返回：
+
+```json
+{"id":"muse2api/gpt-4o","model":"gpt-4o","type":"chat_completion",
+ "status":"available","error":null}
+```
+
+没有切换本机默认模型（仍是原来的 `午睡/deepseek-v4.1-flash`），避免影响本机其它测试；在 AstrBot 的「服务提供商」里选择 `muse2api/gpt-4o` 即可使用。配置备份为 `cmd_config.json.bak-muse2api-*`。
+
 ### 2.2 服务器测试容器集成测试
 
 测试容器 `muse2api-astrbot-test`（端口 18611，隔离数据目录，`WARM_THREADS=2`）通过 OpenAI SDK 发送与 AstrBot 相同结构的请求（含 `x-astrbot-conversation-id` 和 `<conversation_scene>` XML）：
