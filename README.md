@@ -299,6 +299,6 @@ docker run -d --name muse2api \
 
 ## 许可
 
-[MIT](LICENSE) © 2026 慵懒午睡
+[MIT](LICENSE)
 
 本项目仅用于学习、技术研究与自托管实践。请遵守 muse.ai 的服务条款和当地法律，不要用于商业转售、批量注册或其他滥用行为。切勿提交或公开账号 Cookie。
