@@ -28,7 +28,8 @@ def test_system_prompt_is_a_leading_instruction_block():
         {"role": "assistant", "content": "Hi"},
         {"role": "user", "content": "What is the weather?"},
     ])
-    assert plan.prompt.startswith("【系统指令｜最高优先级】\nBe concise.")
+    assert plan.prompt.startswith(
+        "这段对话请始终遵循以下设定（每次回复都要遵守）：\nBe concise.")
     assert "【当前用户消息】\nWhat is the weather?" in plan.prompt
     assert "Hello" in plan.prompt  # earlier turn stays as history
     assert plan.current_user_text == "What is the weather?"
@@ -82,7 +83,7 @@ def test_tool_prompt_keeps_system_and_tool_schema():
          {"role": "user", "content": "find user 789"}],
         TOOLS,
     )
-    assert "【系统指令｜最高优先级】" in plan.prompt
+    assert "这段对话请始终遵循以下设定" in plan.prompt
     assert "get_group_member_info" in plan.prompt
     assert '{"tool":"工具名","arguments":{...}}' in plan.prompt
     assert plan.system_fingerprint

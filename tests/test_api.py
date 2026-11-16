@@ -41,7 +41,7 @@ def test_chat_system_content_parts_use_the_prompt_bridge(client, auth, monkeypat
         ],
     })
     assert r.status_code == 200
-    assert "【系统指令｜最高优先级】" in seen[0].prompt
+    assert "这段对话请始终遵循以下设定" in seen[0].prompt
     assert "你是一只猫，只回复喵。" in seen[0].prompt
     assert seen[0].system_prompt == "你是一只猫，只回复喵。"
 

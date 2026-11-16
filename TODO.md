@@ -113,6 +113,7 @@
 | 0.15.0 | `/v1/responses/compact`（本地摘要 compaction item，可回传）；视频 `thumbnail`/`spritesheet`（本地 ffmpeg + 缓存） |
 | 0.16.0 | 网页同源信封（model.get/model+timezone+capabilities）；原生 vibe 通道与引用标记归一化；VM 推理配置端点 |
 | 0.17.0 | 身份注入面全图（probe 21-27：逐轮实时注入/身份护栏/name 仅注册期）；vibe 清除与诊断；product-improvements 隐私开关 |
+| 0.17.1 | 应对上游对齐体系（00:30 build）：指令投递去包装化（probe 59-68 破案），harness 措辞重构，格式/约束指令恢复可靠遵循 |
 
 详细记录：
 

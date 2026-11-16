@@ -51,7 +51,7 @@ def test_desired_content_appends_fenced_section() -> None:
     out = desired_content("IDENTITY.md", "# IDENTITY.md\n\n- **Name:** Muse\n")
     assert out.startswith("# IDENTITY.md")
     assert MANAGED_BEGIN in out and MANAGED_END in out
-    assert "API session" in out
+    assert "Gateway sessions" in out
     assert "- **Name:** Muse" in out
 
 
