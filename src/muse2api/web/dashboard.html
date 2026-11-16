@@ -403,7 +403,7 @@ label.f input { font-weight: 400; color: var(--text); }
   display: none; width: 36px; height: 36px; place-items: center; border: 0;
   border-radius: 50%; background: var(--wash); color: var(--text); cursor: pointer;
 }
-main { padding: 30px 30px 72px; width: 100%; max-width: 1240px; }
+main { padding: 30px clamp(30px, 2vw, 44px) 72px; width: 100%; }
 
 .page-enter { animation: pageIn .45s var(--ease) both; }
 .hero { padding: 4px 0 26px; }
