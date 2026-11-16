@@ -32,3 +32,11 @@ async def retrieve_model(model: str) -> dict:
             f"The model '{model}' does not exist or you do not have access to it.",
             param="model", code="model_not_found")
     return _model_view(spec)
+
+
+@router.delete("/v1/models/{model}")
+async def delete_model(model: str) -> dict:
+    """Only fine-tuned models can be deleted; this gateway serves none."""
+    raise NotFound(
+        f"The model '{model}' does not exist or you do not have access to it.",
+        param="model", code="model_not_found")

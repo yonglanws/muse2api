@@ -66,6 +66,23 @@ async def test_sdk_responses_streaming(client, auth):
         await http_client.aclose()
 
 
+async def test_sdk_responses_retrieve_stream(client, auth):
+    token = auth["Authorization"].split(" ", 1)[1]
+    sdk, http_client = _sdk_client(client, token)
+    try:
+        created = await sdk.responses.create(model="muse-chat", input="replay me")
+        stream = await sdk.responses.retrieve(created.id, stream=True)
+        final = None
+        async for event in stream:
+            if event.type == "response.completed":
+                final = event.response
+        assert final is not None
+        assert final.status == "completed"
+        assert "replay me" in final.output_text
+    finally:
+        await http_client.aclose()
+
+
 async def test_sdk_videos_roundtrip(client, auth):
     """The official videos client always sends multipart; it must poll to
     ``completed``, list, download, remix and delete against our task store."""

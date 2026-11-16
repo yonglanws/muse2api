@@ -100,6 +100,7 @@
 | 0.10.0 | 错误/头/多选/Responses 状态与函数调用；file_ref 任意附件；严格 muse 模型名 |
 | 0.11.0 | 网页对话产物（图片/视频/文档）与来源引用透出；Files API；Responses 检索面；Chat 参数补齐 |
 | 0.12.0 | Stored Chat Completions；tiktoken 用量/截断；Sora 形状 `/v1/videos`；Responses 对象面与 instructions 语义；Files 过期/分页 |
+| 0.12.1 | 多 Key 数据隔离；Responses SSE `event:`/retrieve stream；legacy function_call；function_call_output 附件；file_url；JSON 模式媒体；过期文件字节清理；删除墓碑 |
 
 详细记录：
 

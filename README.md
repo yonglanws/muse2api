@@ -22,6 +22,7 @@ muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/co
 - **单账号真并发**：逆向实测上游按 VM 并行执行轮次（单连接 12 条并发流零错误），网关用连接池 + 每账号 12 并发把这份能力交给调用方。
 - **异常路径干净**：客户端断开、超时、换号重试都会真正取消上游正在执行的轮次，被中止的线程直接丢弃，不会把半截回复泄漏进下一轮。
 - **多账号、多会话**：账号池负责调度、冷却与故障转移；会话按 API Key 隔离，热线程复用降低首字延迟。
+- **多 Key 数据隔离**：`/v1/files`、stored completions、Responses 链与图片任务都带 owner；一把 Key 不能列出、下载、续聊或删除另一把 Key 的数据。
 - **图片与视频**：文生图、参考图、异步任务、文生视频、透明背景抠图都在同一个网关里。视频接口按 OpenAI Sora 的形状提供 `POST /v1/videos`（JSON 或 multipart）、检索、分页列表、`/content` 下载、`/remix`、删除，状态为 `queued` / `in_progress` / `completed` / `failed`。
 - **自带控制台**：账号池、API 密钥、请求日志与流量统计；界面沿用 muse.ai 的视觉语言（米白画布、药丸控件、克制的蓝色、轻量动效），浅色/深色/跟随系统，移动端可用，零外部依赖。
 
@@ -220,7 +221,7 @@ muse.ai 的 Agent 会在聊天中间直接生成图片/视频/文档，也会在
 | `functions` / `function_call` | legacy 函数调用形状，自动映射到现代 `tools` / `tool_choice` |
 | `web_search_options` / `{"type": "web_search"}` | 驱动上游原生网页搜索并返回 `url_citation` |
 | `store` | `true` 时保存补全，可经 `/v1/chat/completions[/{id}[/messages]]` 检索；默认 `false` |
-| `service_tier` | `auto` / `default` 映射并回显为 `default`；`flex` / `priority` 等返回 400（上游没有分级队列） |
+| `service_tier` | 接受 OpenAI 的 `auto` / `default` / `flex` / `scale` / `priority` / `fast`，响应回显实际执行层级 `default`（上游没有分级队列） |
 | `metadata` | 16 对以内、键 ≤64 / 值 ≤512 字符的字符串字典，原样回显 |
 | `modalities` / `audio` | 请求音频输出时明确 400（muse 只回文本） |
 | `logprobs` / `top_logprobs` | 明确返回 400（muse 模型不提供 token logprobs），不静默伪造 |

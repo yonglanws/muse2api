@@ -14,6 +14,7 @@ from ...core.models import resolve_model
 from ...drivers.base import ImageRequest, InputImage, MediaResult
 from ...errors import InvalidRequest, NotFound
 from ...services.container import Services
+from ...services.ownership import visible
 from ...services.tasks import Task
 from ..deps import get_services, public_base, require_api_key
 from ..schemas import ImageGenerationRequest
@@ -78,7 +79,8 @@ def _submit(body: ImageGenerationRequest, refs: list[InputImage], request: Reque
         return await _run(body, refs, base, svc)
 
     meta = {"model": spec.id, "prompt": body.prompt, "size": body.size, "n": body.n,
-            "references": len(refs)}
+            "references": len(refs),
+            "key_id": getattr(request.state, "key_id", None)}
     task = svc.tasks.submit("image", meta, runner)
     request.state.task_id = task.id
     return _task_view(task)
@@ -110,6 +112,8 @@ async def _run(body: ImageGenerationRequest, refs: list[InputImage], base: str,
         response["size"] = body.size
     if body.quality:
         response["quality"] = body.quality
+    if body.safety_identifier or body.user:
+        response["safety_identifier"] = body.safety_identifier or body.user
     return response
 
 
@@ -172,7 +176,9 @@ async def create_variation(request: Request, svc: Services = Depends(get_service
 async def get_image_task(task_id: str, request: Request,
                          svc: Services = Depends(get_services)) -> dict:
     task = svc.tasks.get(task_id)
-    if task is None or task.kind != "image":
+    if (task is None or task.kind != "image"
+            or not visible(task.request.get("key_id"),
+                           getattr(request.state, "key_id", None))):
         raise NotFound(f"image task '{task_id}' not found")
     request.state.model = task.request.get("model")
     return _task_view(task)

@@ -146,7 +146,7 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
         log.exception("unhandled error")
         return JSONResponse(
             {"error": {"message": "internal error", "type": "server_error",
-                       "code": "internal_error"}},
+                       "param": None, "code": "internal_error"}},
             status_code=500,
         )
 

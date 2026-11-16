@@ -53,6 +53,7 @@ class _Plan:
     tool_continuation: bool = False
     parallel_tool_calls: bool = True
     web_search: bool = False
+    legacy_functions: bool = False
     stop: list[str] | None = None
     json_directive: str | None = None
     # max_tokens mapped to an approximate character cap (muse.ai exposes no
@@ -90,6 +91,10 @@ def _json_directive(response_format) -> str | None:
     if not isinstance(response_format, dict):
         return None
     rtype = response_format.get("type")
+    if rtype not in (None, "text", "json_object", "json_schema"):
+        raise InvalidRequest(
+            f"response_format type '{rtype}' is not supported",
+            param="response_format")
     if rtype == "json_object":
         return _JSON_DIRECTIVE
     if rtype == "json_schema":
@@ -108,6 +113,9 @@ def _stop_list(stop) -> list[str] | None:
         return [stop]
     if isinstance(stop, list):
         seqs = [s for s in stop if isinstance(s, str) and s]
+        if len(seqs) > 4:
+            raise InvalidRequest("stop may contain at most 4 sequences",
+                                 param="stop")
         return seqs or None
     return None
 
@@ -200,7 +208,11 @@ def _select_tools(tools: list[dict] | None, tool_choice) -> tuple[list[dict] | N
         if name:
             picked = [t for t in tools
                       if str((t.get("function") or {}).get("name") or "") == str(name)]
-            return (picked or tools), True
+            if not picked:
+                raise InvalidRequest(
+                    f"tool_choice references unknown function '{name}'",
+                    param="tool_choice")
+            return picked, True
     return tools, tool_choice == "required"
 
 
@@ -247,6 +259,7 @@ def _split_tools(body: ChatCompletionRequest) -> tuple[list[dict] | None, bool]:
 
 def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> _Plan:
     raw_tools, web_search = _split_tools(body)
+    legacy_functions = bool(body.functions) and not body.tools
     tool_choice = body.tool_choice
     if tool_choice is None and body.function_call is not None:
         # Legacy function_call → modern tool_choice.
@@ -292,6 +305,7 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
             tool_continuation=plan.tool_continuation,
             parallel_tool_calls=parallel,
             web_search=web_search,
+            legacy_functions=legacy_functions,
             stop=stop,
             max_chars=cap,
         )
@@ -364,6 +378,15 @@ def _usage(prompt_text: str, completion_text: str) -> dict:
     }
 
 
+def _message_usage_text(message: dict) -> str:
+    """Completion text used for usage: final content or serialized tool calls."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    calls = message.get("tool_calls")
+    return json.dumps(calls, ensure_ascii=False) if calls else ""
+
+
 def _media_suffix(media, svc, base: str) -> str:
     """Render generated chat artifacts as markdown, like muse.ai's inline cards.
 
@@ -382,6 +405,11 @@ def _media_suffix(media, svc, base: str) -> str:
                       else f"[{label}]({url})")
     return ("\n\n" + "\n\n".join(blocks)) if blocks else ""
 
+
+
+def _reply_suffix(plan: _Plan, media, svc, base: str) -> str:
+    """Media links are Markdown; never append them to JSON-mode output."""
+    return "" if plan.json_directive else _media_suffix(media, svc, base)
 
 def _chat_annotations(content: str, citations) -> list[dict] | None:
     """OpenAI ``message.annotations`` entries (the web-search citation shape)."""
@@ -538,10 +566,11 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                            svc: Services = Depends(get_services)):
     spec = resolve_model(body.model, "chat")
     request.state.model = spec.id  # log the actual model, not the client alias
+    owner = getattr(request.state, "key_id", None)
     # file_id references (OpenAI Files API) become inline data URLs here; the
     # rest of the pipeline already understands images/file_ref attachments.
     source_messages = [m.model_dump() for m in body.messages]
-    messages = svc.files.expand_messages(source_messages)
+    messages = svc.files.expand_messages(source_messages, owner)
     plan = _build_plan(body, messages, svc.settings)
     if not plan.prompt and not plan.images:
         raise InvalidRequest("messages contain no text or images")
@@ -560,6 +589,16 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
     if body.logprobs or body.top_logprobs is not None:
         raise InvalidRequest(
             "logprobs are not supported by muse models", param="logprobs")
+    if body.temperature is not None and not 0 <= body.temperature <= 2:
+        raise InvalidRequest("temperature must be between 0 and 2",
+                             param="temperature")
+    if body.top_p is not None and not 0 <= body.top_p <= 1:
+        raise InvalidRequest("top_p must be between 0 and 1", param="top_p")
+    for penalty in ("presence_penalty", "frequency_penalty"):
+        value = getattr(body, penalty, None)
+        if value is not None and not -2 <= value <= 2:
+            raise InvalidRequest(f"{penalty} must be between -2 and 2",
+                                 param=penalty)
     if body.modalities and "audio" in body.modalities:
         raise InvalidRequest(
             "audio output is not supported; muse models reply in text only",
@@ -597,7 +636,8 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
     completion_id = "chatcmpl-" + uuid.uuid4().hex[:24]
     created = int(time.time())
     model_name = body.model or spec.id
-    if body.service_tier not in (None, "auto", "default"):
+    if body.service_tier not in (None, "auto", "default", "flex",
+                                     "scale", "priority", "fast"):
         raise InvalidRequest(
             f"service_tier '{body.service_tier}' is not available for muse models",
             param="service_tier")
@@ -623,10 +663,10 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
         base = public_base(request)
         completion = _completion(plan, "", completion_id, created, model_name,
                                  choices_texts=texts,
-                                 suffixes=[_media_suffix(r.media, svc, base) for r in reqs],
+                                 suffixes=[_reply_suffix(plan, r.media, svc, base) for r in reqs],
                                  citations=[r.citations for r in reqs],
                                  service_tier=service_tier, metadata=body.metadata)
-        _save_stored_completion(svc, body, completion, source_messages)
+        _save_stored_completion(svc, body, completion, source_messages, owner)
         return completion
 
     if body.stream and n > 1:
@@ -665,7 +705,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                     for index, one_text in enumerate(texts):
                         message, finish = choice_text(
                             index, one_text,
-                            _media_suffix(reqs[index].media, svc, base))
+                            _reply_suffix(plan, reqs[index].media, svc, base))
                         message.setdefault("refusal", None)
                         message.setdefault("annotations", [])
                         message.setdefault("audio", None)
@@ -699,9 +739,10 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                                                     for c in stored_choices),
                                             completion_id, created, model_name,
                                             service_tier, body.metadata),
-                        source_messages)
+                        source_messages, owner)
                     if include_usage:
-                        usage = _usage(plan.prompt, "".join(texts))
+                        usage = _usage(plan.prompt, "".join(
+                            _message_usage_text(c["message"]) for c in stored_choices))
                         yield _sse({"id": completion_id, "object": "chat.completion.chunk",
                                     "created": created, "model": model_name,
                                     "system_fingerprint": "muse2api",
@@ -832,13 +873,14 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                     yield _sse(chunk_at(i, {"role": "assistant", "content": ""}))
                 pending = n
                 failures: set[int] = set()
+                stored_choices: list[dict] = []
                 while pending:
                     kind, i, payload = await q.get()
                     if kind == "delta":
                         yield _sse(chunk_at(i, {"content": payload}))
                     elif kind == "end":
                         finishes[i] = payload or "stop"
-                        suffix = _media_suffix(reqs[i].media, svc, base)
+                        suffix = _reply_suffix(plan, reqs[i].media, svc, base)
                         if suffix:
                             texts[i] += suffix
                             yield _sse(chunk_at(i, {"content": suffix}))
@@ -866,9 +908,10 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                         _completion_payload(plan, stored_choices, "".join(texts),
                                             completion_id, created, model_name,
                                             service_tier, body.metadata),
-                        source_messages)
+                        source_messages, owner)
                 if include_usage:
-                    usage = _usage(plan.prompt, "".join(texts))
+                    usage = _usage(plan.prompt, "".join(
+                            _message_usage_text(c["message"]) for c in stored_choices))
                     yield _sse({"id": completion_id, "object": "chat.completion.chunk",
                                 "created": created, "model": model_name,
                                 "system_fingerprint": "muse2api",
@@ -903,10 +946,10 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
         text = await _collect(stream)
         text = await _retry_nonstream(text, plan, req, svc, messages)
         completion = _completion(plan, text, completion_id, created, model_name,
-                                 suffixes=[_media_suffix(req.media, svc, base)],
+                                 suffixes=[_reply_suffix(plan, req.media, svc, base)],
                                  citations=[req.citations],
                                  service_tier=service_tier, metadata=body.metadata)
-        _save_stored_completion(svc, body, completion, source_messages)
+        _save_stored_completion(svc, body, completion, source_messages, owner)
         return completion
 
     def chunk(delta: dict, finish: str | None = None) -> dict:
@@ -973,35 +1016,66 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
             if calls:
                 encoded = [tool_plan.make_tool_call(name, args or {})
                            for name, args in calls]
-                stored_message = {"role": "assistant", "content": None,
-                                  "tool_calls": encoded}
-                stored_finish = "tool_calls"
-                yield _sse(chunk({"content": None, "tool_calls": [
-                    {"index": i, "id": call["id"], "type": "function",
-                     "function": {"name": call["function"]["name"], "arguments": ""}}
-                    for i, call in enumerate(encoded)
-                ]}))
-                for i, call in enumerate(encoded):
-                    yield _sse(chunk({"tool_calls": [
-                        {"index": i, "function": {"arguments": call["function"]["arguments"]}}
+                if plan.legacy_functions:
+                    call = encoded[0]
+                    stored_message = {
+                        "role": "assistant", "content": None,
+                        "function_call": {
+                            "name": call["function"]["name"],
+                            "arguments": call["function"]["arguments"]}}
+                    stored_finish = "function_call"
+                    yield _sse(chunk({"content": None, "function_call": {
+                        "name": call["function"]["name"], "arguments": ""}}))
+                    yield _sse(chunk({"function_call": {
+                        "arguments": call["function"]["arguments"]}}))
+                    yield _sse(chunk({}, "function_call"))
+                else:
+                    stored_message = {"role": "assistant", "content": None,
+                                      "tool_calls": encoded}
+                    stored_finish = "tool_calls"
+                    yield _sse(chunk({"content": None, "tool_calls": [
+                        {"index": i, "id": call["id"], "type": "function",
+                         "function": {"name": call["function"]["name"],
+                                      "arguments": ""}}
+                        for i, call in enumerate(encoded)
                     ]}))
-                yield _sse(chunk({}, "tool_calls"))
+                    for i, call in enumerate(encoded):
+                        yield _sse(chunk({"tool_calls": [
+                            {"index": i, "function": {
+                                "arguments": call["function"]["arguments"]}}
+                        ]}))
+                    yield _sse(chunk({}, "tool_calls"))
             elif tool:
                 call = tool_plan.make_tool_call(tool, args or {})
-                stored_message = {"role": "assistant", "content": None,
-                                  "tool_calls": [call]}
-                stored_finish = "tool_calls"
-                yield _sse(chunk({"content": None, "tool_calls": [
-                    {"index": 0, "id": call["id"], "type": "function",
-                     "function": {"name": call["function"]["name"], "arguments": ""}}
-                ]}))
-                yield _sse(chunk({"tool_calls": [
-                    {"index": 0, "function": {"arguments": call["function"]["arguments"]}}
-                ]}))
-                yield _sse(chunk({}, "tool_calls"))
+                if plan.legacy_functions:
+                    stored_message = {
+                        "role": "assistant", "content": None,
+                        "function_call": {
+                            "name": call["function"]["name"],
+                            "arguments": call["function"]["arguments"]}}
+                    stored_finish = "function_call"
+                    yield _sse(chunk({"content": None, "function_call": {
+                        "name": call["function"]["name"], "arguments": ""}}))
+                    yield _sse(chunk({"function_call": {
+                        "arguments": call["function"]["arguments"]}}))
+                    yield _sse(chunk({}, "function_call"))
+                else:
+                    stored_message = {"role": "assistant", "content": None,
+                                      "tool_calls": [call]}
+                    stored_finish = "tool_calls"
+                    yield _sse(chunk({"content": None, "tool_calls": [
+                        {"index": 0, "id": call["id"], "type": "function",
+                         "function": {"name": call["function"]["name"],
+                                      "arguments": ""}}
+                    ]}))
+                    yield _sse(chunk({"tool_calls": [
+                        {"index": 0, "function": {
+                            "arguments": call["function"]["arguments"]}}
+                    ]}))
+                    yield _sse(chunk({}, "tool_calls"))
             else:
                 cleaned = _clean_text(reply if reply is not None else produced)
-                suffix = _media_suffix(req.media, svc, base)
+                suffix = _reply_suffix(plan, req.media, svc, base)
                 cleaned += suffix
                 annotations = _chat_annotations(cleaned, req.citations)
                 stored_message = {"role": "assistant", "content": cleaned}
@@ -1021,9 +1095,9 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                                             "finish_reason": stored_finish}],
                                     produced, completion_id, created, model_name,
                                     service_tier, body.metadata),
-                source_messages)
+                source_messages, owner)
             if include_usage:
-                usage = _usage(plan.prompt, produced)
+                usage = _usage(plan.prompt, _message_usage_text(stored_message))
                 yield _sse({"id": completion_id, "object": "chat.completion.chunk",
                             "created": created, "model": model_name,
                             "system_fingerprint": "muse2api",
@@ -1092,7 +1166,7 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                         finish_reason = "length"
                         break
                     yield _sse(chunk({"content": delta}))
-            suffix = _media_suffix(req.media, svc, base)
+            suffix = _reply_suffix(plan, req.media, svc, base)
             if suffix:
                 produced += suffix
                 yield _sse(chunk({"content": suffix}))
@@ -1109,9 +1183,9 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                                             "finish_reason": finish_reason}],
                                     produced, completion_id, created, model_name,
                                     service_tier, body.metadata),
-                source_messages)
+                source_messages, owner)
             if include_usage:
-                usage = _usage(plan.prompt, produced)
+                usage = _usage(plan.prompt, _message_usage_text(stored_message))
                 yield _sse({"id": completion_id, "object": "chat.completion.chunk",
                             "created": created, "model": model_name,
                             "system_fingerprint": "muse2api",
@@ -1195,17 +1269,22 @@ def _stored_input_messages(completion_id: str, messages: list[dict]) -> list[dic
             "name": message.get("name"),
             "content_parts": parts,
         })
+        for key in ("tool_calls", "function_call", "refusal", "audio",
+                    "tool_call_id"):
+            if message.get(key) is not None:
+                stored[-1][key] = message[key]
     return stored
 
 
 def _save_stored_completion(svc: Services, body: ChatCompletionRequest,
-                            completion: dict, source_messages: list[dict]) -> None:
+                            completion: dict, source_messages: list[dict],
+                            owner: str | None = None) -> None:
     if not body.store:
         return
     try:
         svc.completions.save(
             completion, _stored_input_messages(completion["id"], source_messages),
-            metadata=body.metadata, user=body.user)
+            metadata=body.metadata, user=body.user, owner=owner)
     except Exception:  # noqa: BLE001
         # Storing is a convenience; a full disk must not lose the reply.
         log.exception("failed to persist stored chat completion")
@@ -1254,15 +1333,17 @@ async def list_chat_completions(request: Request,
             after=request.query_params.get("after") or None,
             limit=_query_limit(request),
             order=_query_order(request),
+            owner=getattr(request.state, "key_id", None),
         )
     except ValueError as exc:
         raise InvalidRequest(str(exc)) from exc
 
 
 @router.get("/v1/chat/completions/{completion_id}")
-async def retrieve_chat_completion(completion_id: str,
+async def retrieve_chat_completion(completion_id: str, request: Request,
                                    svc: Services = Depends(get_services)) -> dict:
-    completion = svc.completions.get(completion_id)
+    completion = svc.completions.get(
+        completion_id, getattr(request.state, "key_id", None))
     if completion is None:
         raise _missing_completion(completion_id)
     return completion
@@ -1270,17 +1351,20 @@ async def retrieve_chat_completion(completion_id: str,
 
 @router.post("/v1/chat/completions/{completion_id}")
 async def update_chat_completion(completion_id: str, body: ChatCompletionUpdateRequest,
+                                 request: Request,
                                  svc: Services = Depends(get_services)) -> dict:
-    completion = svc.completions.update_metadata(completion_id, body.metadata)
+    completion = svc.completions.update_metadata(
+        completion_id, body.metadata, getattr(request.state, "key_id", None))
     if completion is None:
         raise _missing_completion(completion_id)
     return completion
 
 
 @router.delete("/v1/chat/completions/{completion_id}")
-async def delete_chat_completion(completion_id: str,
+async def delete_chat_completion(completion_id: str, request: Request,
                                  svc: Services = Depends(get_services)) -> dict:
-    if not svc.completions.delete(completion_id):
+    if not svc.completions.delete(
+            completion_id, getattr(request.state, "key_id", None)):
         raise _missing_completion(completion_id)
     return {"id": completion_id, "object": "chat.completion.deleted", "deleted": True}
 
@@ -1294,6 +1378,7 @@ async def list_chat_completion_messages(completion_id: str, request: Request,
             after=request.query_params.get("after") or None,
             limit=_query_limit(request),
             order=_query_order(request),
+            owner=getattr(request.state, "key_id", None),
         )
     except ValueError as exc:
         raise InvalidRequest(str(exc)) from exc
@@ -1328,6 +1413,12 @@ def _message_from_text(plan: _Plan, text: str) -> tuple[dict, str]:
             content = truncate_tokens(content, plan.max_chars)
             finish = "length"
         message = {"role": "assistant", "content": content}
+    if plan.legacy_functions and message.get("tool_calls"):
+        call = message["tool_calls"][0]
+        message = {"role": "assistant", "content": None,
+                   "function_call": {"name": call["function"]["name"],
+                                     "arguments": call["function"]["arguments"]}}
+        finish = "function_call"
     return message, finish
 
 
@@ -1353,7 +1444,7 @@ def _completion(plan: _Plan, text: str,
             message["annotations"] = annotations
         choices = [{"index": 0, "message": message, "logprobs": None,
                     "finish_reason": finish}]
-        usage_text = text
+        usage_text = _message_usage_text(message)
     else:
         choices = []
         for index, one_text in enumerate(choices_texts):
@@ -1372,7 +1463,8 @@ def _completion(plan: _Plan, text: str,
                 message["annotations"] = annotations
             choices.append({"index": index, "message": message, "logprobs": None,
                             "finish_reason": finish})
-        usage_text = "".join(choices_texts)
+        usage_text = "".join(_message_usage_text(c["message"])
+                              for c in choices)
     body = {
         "id": completion_id,
         "object": "chat.completion",

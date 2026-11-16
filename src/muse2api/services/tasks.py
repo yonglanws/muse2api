@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..errors import Muse2APIError
+from .ownership import visible
 
 log = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class TaskManager:
         tasks = [t for t in self._tasks.values() if kind is None or t.kind == kind]
         if owner is not None:
             tasks = [t for t in tasks
-                     if t.request.get("key_id") in (None, owner)]
+                     if visible(t.request.get("key_id"), owner)]
         reverse = order != "asc"
         tasks.sort(key=lambda t: (t.created_at, t.id), reverse=reverse)
         if after:

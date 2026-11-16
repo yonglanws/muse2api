@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 
+from muse2api.services.file_store import FileStore
 from test_robustness import StubDriver, _auth, _stub_client
 from test_web_chat_surface import _mock_client
 
@@ -41,9 +42,15 @@ def test_chat_service_tier_echo_and_validation(tmp_path):
               if line.startswith("data: ") and line != "data: [DONE]"]
     assert all(chunk.get("service_tier") == "default" for chunk in chunks)
 
-    rejected = client.post("/v1/chat/completions", headers=_auth(), json={
+    accepted = client.post("/v1/chat/completions", headers=_auth(), json={
         "messages": [{"role": "user", "content": "hi"}],
         "service_tier": "priority"})
+    assert accepted.status_code == 200
+    assert accepted.json()["service_tier"] == "default"
+
+    rejected = client.post("/v1/chat/completions", headers=_auth(), json={
+        "messages": [{"role": "user", "content": "hi"}],
+        "service_tier": "turbo"})
     assert rejected.status_code == 400
     assert rejected.json()["error"]["param"] == "service_tier"
 
@@ -213,7 +220,7 @@ def test_models_expose_shutdown_date_and_reject_delete(tmp_path):
     assert all(model["shutdown_date"] is None for model in listing["data"])
     model_id = listing["data"][0]["id"]
     assert client.delete(f"/v1/models/{model_id}",
-                         headers=_auth()).status_code == 405
+                         headers=_auth()).status_code == 404
 
 
 # --- Videos ----------------------------------------------------------------
@@ -242,3 +249,130 @@ def test_video_ids_use_sora_prefix(tmp_path):
                             headers=_auth()).json()
     assert deleted == {"id": created["id"], "object": "video.deleted",
                        "deleted": True}
+
+
+# --- ownership / security --------------------------------------------------
+
+def test_stored_objects_are_scoped_per_api_key(tmp_path):
+    client = _stub_client(tmp_path, StubDriver("scoped"))
+    other = client.post("/admin/keys", headers=_auth(),
+                        json={"name": "other"}).json()["api_key"]
+    other_auth = {"Authorization": f"Bearer {other}"}
+
+    file_id = client.post("/v1/files", headers=_auth(), files={
+        "file": ("secret.txt", b"OWNER-ONLY", "text/plain")}).json()["id"]
+    assert client.get(f"/v1/files/{file_id}",
+                      headers=other_auth).status_code == 404
+    assert client.get("/v1/files", headers=other_auth).json()["data"] == []
+
+    completion = client.post("/v1/chat/completions", headers=_auth(), json={
+        "messages": [{"role": "user", "content": "hi"}],
+        "store": True}).json()
+    assert client.get(f"/v1/chat/completions/{completion['id']}",
+                      headers=other_auth).status_code == 404
+
+    response = client.post("/v1/responses", headers=_auth(),
+                           json={"input": "one"}).json()
+    assert client.get(f"/v1/responses/{response['id']}",
+                      headers=other_auth).status_code == 404
+    chained = client.post("/v1/responses", headers=other_auth, json={
+        "input": "two", "previous_response_id": response["id"]})
+    assert chained.status_code == 404
+
+    # The owner still sees everything.
+    assert client.get(f"/v1/files/{file_id}", headers=_auth()).status_code == 200
+    assert client.get(f"/v1/chat/completions/{completion['id']}",
+                      headers=_auth()).status_code == 200
+    assert client.get(f"/v1/responses/{response['id']}",
+                      headers=_auth()).status_code == 200
+
+
+def test_file_expiry_is_pruned_and_bytes_removed(tmp_path):
+    store = FileStore(tmp_path / "files", tmp_path / "files.json")
+    entry = store.create(filename="old.txt", purpose="assistants",
+                         data=b"expired", mime="text/plain")
+    index = json.loads((tmp_path / "files.json").read_text(encoding="utf-8"))
+    backing = tmp_path / "files" / index["files"][entry["id"]]["stored"]
+    assert backing.is_file()
+    store._items[entry["id"]]["expires_at"] = time.time() - 1
+    assert store.prune(0) == 1
+    assert not backing.is_file()
+    assert store.get(entry["id"]) is None
+
+
+# --- Responses stream / input items ---------------------------------------
+
+def test_responses_sse_has_event_lines(tmp_path):
+    client = _stub_client(tmp_path, StubDriver("events"))
+    text = client.post("/v1/responses", headers=_auth(), json={
+        "input": "hello", "stream": True}).text
+    assert "event: response.created" in text
+    assert "event: response.output_text.delta" in text
+    assert "event: response.completed" in text
+
+
+def test_responses_retrieve_stream_replays_terminal_event(tmp_path):
+    client = _stub_client(tmp_path, StubDriver("replay"))
+    created = client.post("/v1/responses", headers=_auth(),
+                          json={"input": "hello"}).json()
+    text = client.get(f"/v1/responses/{created['id']}",
+                      headers=_auth(), params={"stream": True}).text
+    assert "event: response.created" in text
+    assert "event: response.output_text.delta" in text
+    assert "event: response.completed" in text
+    assert '"delta": "replay"' in text
+
+
+def test_input_items_skip_reasoning_items(tmp_path):
+    client = _stub_client(tmp_path, StubDriver("ok"))
+    body = client.post("/v1/responses", headers=_auth(), json={
+        "input": [
+            {"type": "reasoning", "id": "rs_1", "summary": []},
+            {"role": "user", "content": "hello"},
+        ]}).json()
+    items = client.get(f"/v1/responses/{body['id']}/input_items",
+                       headers=_auth()).json()["data"]
+    assert [item["content"][0]["text"] for item in items] == ["hello"]
+
+
+def test_prompt_template_is_rejected(tmp_path):
+    client = _stub_client(tmp_path, StubDriver("ok"))
+    r = client.post("/v1/responses", headers=_auth(), json={
+        "input": "hello", "prompt": {"id": "pmpt_123"}})
+    assert r.status_code == 400
+    assert r.json()["error"]["param"] == "prompt"
+
+
+# --- Responses input attachments -------------------------------------------
+
+def test_function_call_output_list_reaches_upstream(tmp_path):
+    driver = StubDriver("ok")
+    client = _stub_client(tmp_path, driver)
+    image = ("data:image/png;base64,"
+             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    r = client.post("/v1/responses", headers=_auth(), json={
+        "input": [
+            {"type": "function_call", "call_id": "call_1",
+             "name": "look", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": [
+                {"type": "input_text", "text": "here"},
+                {"type": "input_image", "image_url": image},
+            ]},
+        ]})
+    assert r.status_code == 200
+    assert driver.requests[0].images[0].mime == "image/png"
+
+
+def test_input_file_url_is_fetched(tmp_path, monkeypatch):
+    driver = StubDriver("ok")
+    client = _stub_client(tmp_path, driver)
+
+    async def fake_load(ref, *, timeout=20.0):
+        return b"URL-FILE", "text/plain"
+
+    monkeypatch.setattr("muse2api.api.routes.responses.load_image_ref", fake_load)
+    r = client.post("/v1/responses", headers=_auth(), json={
+        "input": [{"type": "input_file", "file_url": "https://example.com/a.txt"},
+                  {"role": "user", "content": "read"}]})
+    assert r.status_code == 200
+    assert driver.requests[0].images[0].data == b"URL-FILE"

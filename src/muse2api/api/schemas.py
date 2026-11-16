@@ -49,7 +49,7 @@ class ChatCompletionRequest(_Lenient):
     audio: dict[str, Any] | None = None
     # Executed parameters.
     stop: str | list[str] | None = None
-    n: int | None = Field(default=None, ge=1, le=8)
+    n: int | None = Field(default=None, ge=1, le=128)
     response_format: dict[str, Any] | None = None
     logprobs: bool | None = None
     top_logprobs: int | None = None

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import InvalidRequest, NotFound
+from .ownership import visible
 
 log = logging.getLogger(__name__)
 
@@ -53,10 +54,14 @@ class FileStore:
         if not isinstance(items, dict):
             return
         now = time.time()
-        self._items = {
-            key: value for key, value in items.items()
-            if isinstance(value, dict) and self._fresh(value, now)
-        }
+        self._items = {}
+        for key, value in items.items():
+            if not isinstance(value, dict):
+                continue
+            if self._fresh(value, now):
+                self._items[key] = value
+            else:
+                self._unlink(value)
 
     def _fresh(self, entry: dict[str, Any], now: float) -> bool:
         expires_at = entry.get("expires_at")
@@ -68,19 +73,35 @@ class FileStore:
 
     def _persist(self) -> None:
         now = time.time()
-        kept = {k: v for k, v in self._items.items() if self._fresh(v, now)}
+        # Removing expired entries from the index must also remove their bytes;
+        # otherwise every TTL rotation leaves orphan files in data/files.
+        for file_id, entry in list(self._items.items()):
+            if not self._fresh(entry, now):
+                self._items.pop(file_id, None)
+                self._unlink(entry)
+        kept = self._items
         ordered = sorted(kept.items(), key=lambda kv: kv[1].get("created", 0),
-                         reverse=True)[:_MAX_INDEX_ENTRIES]
-        self._items = dict(ordered)
+                         reverse=True)
+        for _, entry in ordered[_MAX_INDEX_ENTRIES:]:
+            self._unlink(entry)
+        self._items = dict(ordered[:_MAX_INDEX_ENTRIES])
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.index_path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"files": self._items}, ensure_ascii=False),
                        encoding="utf-8")
         tmp.replace(self.index_path)
 
+    def _unlink(self, entry: dict[str, Any]) -> None:
+        stored = str(entry.get("stored") or "")
+        if _SAFE_STORED.match(stored):
+            path = self.root / stored
+            if path.is_file():
+                path.unlink()
+
     # ------------------------------------------------------------ public API
     def create(self, *, filename: str, purpose: str, data: bytes,
-               mime: str = "", expires_at: float | None = None) -> dict[str, Any]:
+               mime: str = "", expires_at: float | None = None,
+               owner: str | None = None) -> dict[str, Any]:
         if self.max_bytes and len(data) > self.max_bytes:
             raise InvalidRequest(
                 f"file exceeds the {self.max_bytes} byte upload limit",
@@ -105,6 +126,7 @@ class FileStore:
             "status": "processed",
             "expires_at": int(expires_at) if expires_at else None,
             "status_details": None,
+            "owner": owner,
         }
         self._items[file_id] = entry
         self._persist()
@@ -124,23 +146,26 @@ class FileStore:
             "status_details": entry.get("status_details"),
         }
 
-    def get(self, file_id: str) -> dict[str, Any] | None:
+    def get(self, file_id: str, owner: str | None = None) -> dict[str, Any] | None:
         entry = self._items.get(file_id)
         if entry is None:
             return None
         if not self._fresh(entry, time.time()):
             self._items.pop(file_id, None)
             return None
+        if not visible(entry.get("owner"), owner):
+            return None
         return entry
 
-    def retrieve(self, file_id: str) -> dict[str, Any]:
-        entry = self.get(file_id)
+    def retrieve(self, file_id: str, owner: str | None = None) -> dict[str, Any]:
+        entry = self.get(file_id, owner)
         if entry is None:
             raise NotFound(f"No file found with id '{file_id}'.", param="file_id")
         return self._view(entry)
 
-    def read(self, file_id: str) -> tuple[bytes, dict[str, Any]]:
-        entry = self.get(file_id)
+    def read(self, file_id: str,
+             owner: str | None = None) -> tuple[bytes, dict[str, Any]]:
+        entry = self.get(file_id, owner)
         if entry is None:
             raise NotFound(f"No file found with id '{file_id}'.", param="file_id")
         stored = str(entry.get("stored") or "")
@@ -149,8 +174,8 @@ class FileStore:
             raise NotFound(f"No file found with id '{file_id}'.", param="file_id")
         return path.read_bytes(), entry
 
-    def delete(self, file_id: str) -> dict[str, Any]:
-        entry = self.get(file_id)
+    def delete(self, file_id: str, owner: str | None = None) -> dict[str, Any]:
+        entry = self.get(file_id, owner)
         if entry is None:
             raise NotFound(f"No file found with id '{file_id}'.", param="file_id")
         self._items.pop(file_id, None)
@@ -163,16 +188,18 @@ class FileStore:
         return {"id": file_id, "object": "file", "deleted": True}
 
     def list(self, *, purpose: str | None = None, limit: int = 10000,
-             order: str = "desc", after: str | None = None) -> list[dict[str, Any]]:
+             order: str = "desc", after: str | None = None,
+             owner: str | None = None) -> list[dict[str, Any]]:
         now = time.time()
-        entries = [e for e in self._items.values() if self._fresh(e, now)]
+        entries = [e for e in self._items.values()
+                   if self._fresh(e, now) and visible(e.get("owner"), owner)]
         if purpose:
             entries = [e for e in entries if e.get("purpose") == purpose]
         reverse = order != "asc"
         entries.sort(key=lambda e: e.get("created", 0), reverse=reverse)
         if after:
             cursor = self._items.get(after)
-            if cursor is not None:
+            if cursor is not None and visible(cursor.get("owner"), owner):
                 created = cursor.get("created", 0)
                 if reverse:
                     entries = [e for e in entries if e.get("created", 0) < created]
@@ -183,24 +210,23 @@ class FileStore:
         return [self._view(e) for e in entries]
 
     def prune(self, max_age_seconds: float) -> int:
-        if max_age_seconds <= 0:
-            return 0
         now = time.time()
-        expired = [k for k, v in self._items.items()
-                   if now - float(v.get("created", 0)) > max_age_seconds]
+        expired = [
+            k for k, v in self._items.items()
+            if not self._fresh(v, now)
+            or (max_age_seconds > 0
+                and now - float(v.get("created", 0)) > max_age_seconds)
+        ]
         for file_id in expired:
             entry = self._items.pop(file_id, None) or {}
-            stored = str(entry.get("stored") or "")
-            if _SAFE_STORED.match(stored):
-                path = self.root / stored
-                if path.is_file():
-                    path.unlink()
+            self._unlink(entry)
         if expired:
             self._persist()
         return len(expired)
 
     # ------------------------------------------------------------ message refs
-    def expand_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def expand_messages(self, messages: list[dict[str, Any]],
+                        owner: str | None = None) -> list[dict[str, Any]]:
         """Replace ``file_id`` references with inline data URLs.
 
         Called before prompt building. Every OpenAI attachment shape the gateway
@@ -213,17 +239,17 @@ class FileStore:
             if isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict):
-                        self._expand_part(part)
+                        self._expand_part(part, owner)
         return expanded
 
-    def _expand_part(self, part: dict[str, Any]) -> None:
+    def _expand_part(self, part: dict[str, Any], owner: str | None = None) -> None:
         ptype = part.get("type")
         if ptype in ("file", "input_file"):
             nested = part.get("file")
             holder = nested if isinstance(nested, dict) else part
             file_id = str(holder.get("file_id") or part.get("file_id") or "")
             if file_id:
-                data, entry = self.read(file_id)
+                data, entry = self.read(file_id, owner)
                 holder["file_data"] = self._data_url(data, entry)
                 holder["filename"] = holder.get("filename") or entry["filename"]
                 holder.pop("file_id", None)
@@ -231,7 +257,7 @@ class FileStore:
         if ptype == "input_image":
             file_id = str(part.get("file_id") or "")
             if file_id:
-                data, entry = self.read(file_id)
+                data, entry = self.read(file_id, owner)
                 part["image_url"] = self._data_url(data, entry)
                 part.pop("file_id", None)
             return
@@ -241,7 +267,7 @@ class FileStore:
             if isinstance(ref, dict):
                 file_id = str(ref.get("file_id") or "")
             if file_id:
-                data, entry = self.read(file_id)
+                data, entry = self.read(file_id, owner)
                 part["image_url"] = {"url": self._data_url(data, entry)}
 
     @staticmethod

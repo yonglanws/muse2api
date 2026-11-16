@@ -13,16 +13,20 @@ import mimetypes
 import re
 import time
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import Response
 
-from ...errors import InvalidRequest
+from ...errors import InvalidRequest, NotFound
 from ...services.container import Services
 from ..deps import get_services, require_api_key
 
 router = APIRouter(tags=["files"], dependencies=[Depends(require_api_key)])
 
 _PURPOSES = {"assistants", "batch", "fine-tune", "vision", "user_data", "evals"}
+
+
+def _owner(request: Request) -> str | None:
+    return getattr(request.state, "key_id", None)
 
 
 def _expiration(raw: str | None) -> float | None:
@@ -54,6 +58,7 @@ def _expiration(raw: str | None) -> float | None:
 
 @router.post("/v1/files")
 async def create_file(
+    request: Request,
     file: UploadFile = File(...),
     purpose: str = Form(default="assistants"),
     expires_after: str | None = Form(default=None),
@@ -75,20 +80,25 @@ async def create_file(
     mime = file.content_type or mimetypes.guess_type(filename)[0] or ""
     return svc.files.create(filename=filename, purpose=purpose,
                             data=data, mime=mime,
-                            expires_at=_expiration(expires_after))
+                            expires_at=_expiration(expires_after),
+                            owner=_owner(request))
 
 
 @router.get("/v1/files")
 async def list_files(
+    request: Request,
     purpose: str | None = Query(default=None),
     limit: int = Query(default=10000, ge=1, le=10000),
     order: str = Query(default="desc", pattern="^(asc|desc)$"),
     after: str | None = Query(default=None),
     svc: Services = Depends(get_services),
 ) -> dict:
+    owner = _owner(request)
+    if after and svc.files.get(after, owner) is None:
+        raise NotFound(f"No file found with id '{after}'.", param="after")
     # One extra row tells us whether another page exists.
     data = svc.files.list(purpose=purpose, limit=limit + 1,
-                          order=order, after=after)
+                          order=order, after=after, owner=owner)
     has_more = len(data) > limit
     page = data[:limit]
     return {"object": "list", "data": page,
@@ -98,8 +108,9 @@ async def list_files(
 
 
 @router.get("/v1/files/{file_id}/content")
-async def get_file_content(file_id: str, svc: Services = Depends(get_services)):
-    data, entry = svc.files.read(file_id)
+async def get_file_content(file_id: str, request: Request,
+                           svc: Services = Depends(get_services)):
+    data, entry = svc.files.read(file_id, _owner(request))
     # Client-supplied filenames must not be able to inject header syntax.
     filename = re.sub(r'[^A-Za-z0-9._-]+', "_",
                       str(entry.get("filename") or file_id))[:120] or file_id
@@ -113,10 +124,12 @@ async def get_file_content(file_id: str, svc: Services = Depends(get_services)):
 
 
 @router.get("/v1/files/{file_id}")
-async def retrieve_file(file_id: str, svc: Services = Depends(get_services)) -> dict:
-    return svc.files.retrieve(file_id)
+async def retrieve_file(file_id: str, request: Request,
+                        svc: Services = Depends(get_services)) -> dict:
+    return svc.files.retrieve(file_id, _owner(request))
 
 
 @router.delete("/v1/files/{file_id}")
-async def delete_file(file_id: str, svc: Services = Depends(get_services)) -> dict:
-    return svc.files.delete(file_id)
+async def delete_file(file_id: str, request: Request,
+                      svc: Services = Depends(get_services)) -> dict:
+    return svc.files.delete(file_id, _owner(request))

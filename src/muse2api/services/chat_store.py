@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .ownership import visible
+
 log = logging.getLogger(__name__)
 
 _MAX_ENTRIES = 2000
@@ -97,7 +99,8 @@ class ChatCompletionStore:
     # ------------------------------------------------------------------- write
     def save(self, completion: dict[str, Any], messages: list[dict[str, Any]], *,
              metadata: dict[str, Any] | None = None,
-             user: str | None = None) -> None:
+             user: str | None = None,
+             owner: str | None = None) -> None:
         completion = copy.deepcopy(completion)
         completion["metadata"] = copy.deepcopy(metadata) if metadata else {}
         self._items[completion["id"]] = {
@@ -105,14 +108,16 @@ class ChatCompletionStore:
             "messages": copy.deepcopy(messages),
             "metadata": copy.deepcopy(metadata) if metadata else {},
             "user": user,
+            "owner": owner,
             "model": completion.get("model"),
             "created": completion.get("created", int(time.time())),
             "stored_at": time.time(),
         }
         self._persist()
 
-    def update_metadata(self, completion_id: str, metadata: dict[str, Any] | None) -> dict | None:
-        entry = self._get_entry(completion_id)
+    def update_metadata(self, completion_id: str, metadata: dict[str, Any] | None,
+                        owner: str | None = None) -> dict | None:
+        entry = self._get_entry(completion_id, owner)
         if entry is None:
             return None
         entry["metadata"] = copy.deepcopy(metadata) if metadata else {}
@@ -120,29 +125,34 @@ class ChatCompletionStore:
         self._persist()
         return copy.deepcopy(entry["completion"])
 
-    def delete(self, completion_id: str) -> bool:
-        if self._items.pop(completion_id, None) is None:
+    def delete(self, completion_id: str, owner: str | None = None) -> bool:
+        if self._get_entry(completion_id, owner) is None:
             return False
+        self._items.pop(completion_id, None)
         self._persist()
         return True
 
     # -------------------------------------------------------------------- read
-    def _get_entry(self, completion_id: str) -> dict[str, Any] | None:
+    def _get_entry(self, completion_id: str,
+                   owner: str | None = None) -> dict[str, Any] | None:
         entry = self._items.get(completion_id)
         if entry is None:
             return None
         if not self._fresh(entry, time.time()):
             self._items.pop(completion_id, None)
             return None
+        if not visible(entry.get("owner"), owner):
+            return None
         return entry
 
-    def get(self, completion_id: str) -> dict[str, Any] | None:
-        entry = self._get_entry(completion_id)
+    def get(self, completion_id: str,
+            owner: str | None = None) -> dict[str, Any] | None:
+        entry = self._get_entry(completion_id, owner)
         return copy.deepcopy(entry["completion"]) if entry else None
 
     def list(self, *, model: str | None = None, metadata: dict[str, str] | None = None,
              after: str | None = None, limit: int = _DEFAULT_LIMIT,
-             order: str = "asc") -> dict[str, Any]:
+             order: str = "asc", owner: str | None = None) -> dict[str, Any]:
         limit = max(1, min(int(limit), _MAX_LIMIT))
         ids = [
             cid for cid, entry in sorted(
@@ -150,6 +160,7 @@ class ChatCompletionStore:
                 key=lambda kv: (kv[1].get("created", 0), kv[1].get("stored_at", 0)),
             )
             if self._fresh(entry, time.time())
+            and visible(entry.get("owner"), owner)
             and (model is None or entry.get("model") == model)
             and all(entry.get("metadata", {}).get(k) == v
                     for k, v in (metadata or {}).items())
@@ -159,8 +170,9 @@ class ChatCompletionStore:
 
     def messages(self, completion_id: str, *, after: str | None = None,
                  limit: int = _DEFAULT_LIMIT,
-                 order: str = "asc") -> dict[str, Any] | None:
-        entry = self._get_entry(completion_id)
+                 order: str = "asc",
+                 owner: str | None = None) -> dict[str, Any] | None:
+        entry = self._get_entry(completion_id, owner)
         if entry is None:
             return None
         limit = max(1, min(int(limit), _MAX_LIMIT))

@@ -70,7 +70,7 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机�
 | `functions` / `function_call` | legacy 形状自动映射到现代 `tools` / `tool_choice` |
 | `web_search_options` / `tools: [{"type": "web_search"}]` | 驱动 muse.ai 原生网页搜索/读取，来源变成标准 `url_citation` annotations |
 | `store` | `true` 时落盘到 `data/chat_completions.json`，可用 `chat.completions.list/retrieve/update/delete/messages`；默认 `false`（与 OpenAI 一致） |
-| `service_tier` | `auto` / `default` 映射并回显为 `default`；`flex` / `priority` 返回 400（上游没有分级队列） |
+| `service_tier` | 接受 `auto` / `default` / `flex` / `scale` / `priority` / `fast`，回显实际执行层级 `default`（上游没有分级队列） |
 | `metadata` | 最多 16 对、键 ≤64 / 值 ≤512 字符的字符串字典；超界 400 |
 | `modalities` / `audio` | 请求音频输出时 400（muse 只回文本） |
 | `logprobs` / `top_logprobs` | 400（muse 模型不提供 token logprobs），不伪造概率 |
@@ -114,8 +114,10 @@ client.chat.completions.create(model="muse-chat", messages=[{
     "content": [{"type": "file", "file": {"file_id": file.id}}]}])
 ```
 
-`file_id` 在提示词构建前展开为内联 data URL；`POST/GET/DELETE /v1/files`、`/v1/files/{id}/content`
-均可用，文件默认保留 30 天（`expires_after` 可指定 1 小时到 30 天的过期时间）。
+`file_id` 在提示词构建前展开为内联 data URL；Responses 的 `input_file.file_url` 也会由网关抓取并内联。
+`POST/GET/DELETE /v1/files`、`/v1/files/{id}/content` 均可用，文件默认保留 30 天
+（`expires_after` 可指定 1 小时到 30 天的过期时间）。Files、stored completions、Responses
+链与图片任务都按 API Key 隔离。
 
 ## Stored Chat Completions（0.12.0）
 

@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .ownership import visible
+
 log = logging.getLogger(__name__)
 
 _MAX_ENTRIES = 1000
@@ -27,6 +29,9 @@ class ResponseStore:
         # In-flight responses, for POST /v1/responses/{id}/cancel. Never
         # persisted: a restart cannot cancel a turn that no longer exists.
         self._live: dict[str, dict[str, Any]] = {}
+        # Ids deleted while their turn was still running; save_chain() must not
+        # recreate them when the turn finishes.
+        self._deleted: set[str] = set()
 
     def load(self) -> None:
         if not self.path.is_file():
@@ -58,18 +63,24 @@ class ResponseStore:
         tmp.write_text(json.dumps(self._items, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self.path)
 
-    def get(self, response_id: str) -> dict[str, Any] | None:
+    def get(self, response_id: str,
+            owner: str | None = None) -> dict[str, Any] | None:
         entry = self._items.get(response_id)
         if entry is None:
             return None
         if not self._fresh(entry, time.time()):
             self._items.pop(response_id, None)
             return None
+        if not visible(entry.get("owner"), owner):
+            return None
         return entry
 
     def save(self, response_id: str, *, model: str, messages: list[dict],
              hint: str | None, response: dict[str, Any] | None = None,
-             input_messages: list[dict] | None = None) -> None:
+             input_messages: list[dict] | None = None,
+             owner: str | None = None) -> None:
+        if response_id in self._deleted:
+            return
         self._items[response_id] = {
             "id": response_id,
             "created": time.time(),
@@ -81,26 +92,31 @@ class ResponseStore:
             "response": response,
             # The request's unconverted chat messages, for input_items.
             "input_messages": input_messages if input_messages is not None else messages,
+            "owner": owner,
         }
         self._persist()
 
-    def delete(self, response_id: str) -> bool:
-        entry = self._items.pop(response_id, None)
-        if entry is None:
+    def delete(self, response_id: str, owner: str | None = None) -> bool:
+        if self.get(response_id, owner) is None:
             return False
+        self._items.pop(response_id, None)
+        self._deleted.add(response_id)
         self._persist()
         return True
 
     # ------------------------------------------------------------ live turns
-    def start_live(self, response_id: str, cancel, snapshot: dict[str, Any]) -> None:
-        self._live[response_id] = {"cancel": cancel, "snapshot": snapshot}
+    def start_live(self, response_id: str, cancel, snapshot: dict[str, Any],
+                   owner: str | None = None) -> None:
+        self._live[response_id] = {"cancel": cancel, "snapshot": snapshot,
+                                   "owner": owner}
 
     def finish_live(self, response_id: str) -> None:
         self._live.pop(response_id, None)
 
-    def cancel_live(self, response_id: str) -> dict[str, Any] | None:
+    def cancel_live(self, response_id: str,
+                    owner: str | None = None) -> dict[str, Any] | None:
         live = self._live.get(response_id)
-        if live is None:
+        if live is None or not visible(live.get("owner"), owner):
             return None
         cancel = live.get("cancel")
         if cancel is not None:

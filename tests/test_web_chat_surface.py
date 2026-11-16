@@ -302,6 +302,21 @@ def test_legacy_functions_become_tools(tmp_path):
     assert driver.requests[0].tools[0]["function"]["name"] == "get_weather"
 
 
+def test_legacy_functions_response_shape(tmp_path):
+    driver = StubDriver('{"tool": "get_weather", "arguments": {"city": "Paris"}}')
+    client = _stub_client(tmp_path, driver, tool_channel="planner", tool_retries=0)
+    r = client.post("/v1/chat/completions", headers=_auth(), json={
+        "messages": [{"role": "user", "content": "weather?"}],
+        "functions": [{"name": "get_weather",
+                       "parameters": {"type": "object",
+                                      "properties": {"city": {"type": "string"}}}}]})
+    assert r.status_code == 200
+    choice = r.json()["choices"][0]
+    assert choice["finish_reason"] == "function_call"
+    assert choice["message"]["function_call"]["name"] == "get_weather"
+    assert "tool_calls" not in choice["message"]
+
+
 def test_parallel_tool_calls_false_keeps_one_call(tmp_path):
     reply = json.dumps({"calls": [
         {"tool": "get_weather", "arguments": {"city": "Paris"}},

@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from ...core.media import load_image_ref
@@ -24,6 +25,7 @@ from ...core.models import MODELS
 from ...drivers.base import InputImage, VideoRequest
 from ...errors import FeatureNotImplemented, InvalidRequest, NotFound
 from ...services.container import Services
+from ...services.ownership import visible
 from ...services.tasks import Task, TaskStatus
 from ..deps import get_services, public_base, require_api_key
 from ..schemas import VideoCreateRequest, VideoRemixRequest
@@ -64,6 +66,8 @@ def _resolve_video_model(name: str | None):
 
 
 def _normalize_size(raw: Any) -> str:
+    if raw is None or raw == "":
+        return _DEFAULT_SIZE
     if isinstance(raw, str) and raw.strip():
         value = raw.strip()
         if value in _SIZE_HINTS:
@@ -74,7 +78,9 @@ def _normalize_size(raw: Any) -> str:
         normalized = value.lower().replace("×", "x").replace(" ", "")
         if normalized in _SIZE_HINTS:
             return normalized
-    return _DEFAULT_SIZE
+    raise InvalidRequest(
+        "size must be one of 720x1280, 1280x720, 1024x1792, 1792x1024",
+        param="size")
 
 
 def _size_hint(size: str) -> str:
@@ -89,14 +95,16 @@ def _parse_seconds(*values: Any) -> int:
             seconds = int(str(value).strip())
         except (TypeError, ValueError):
             raise InvalidRequest(
-                "seconds must be one of 4, 8 or 12", param="seconds") from None
+                "seconds must be an integer between 1 and 60",
+                param="seconds") from None
         if 1 <= seconds <= 60:
             return seconds
         raise InvalidRequest("seconds must be between 1 and 60", param="seconds")
     return _DEFAULT_SECONDS
 
 
-async def _load_reference(value: Any, svc: Services) -> InputImage | None:
+async def _load_reference(value: Any, svc: Services,
+                          owner: str | None = None) -> InputImage | None:
     """Resolve an ``input_reference`` (file, file_id, URL, data URL, base64)."""
     if value is None or value == "":
         return None
@@ -126,7 +134,7 @@ async def _load_reference(value: Any, svc: Services) -> InputImage | None:
         file_id = value.get("file_id") or value.get("id")
         url = value.get("image_url") or value.get("url")
         if file_id:
-            data, entry = svc.files.read(str(file_id))
+            data, entry = svc.files.read(str(file_id), owner)
             mime = str(entry.get("mime") or "image/png").split(";")[0].strip()
             if not mime.startswith("image/"):
                 raise InvalidRequest("input_reference must be an image",
@@ -141,13 +149,8 @@ async def _load_reference(value: Any, svc: Services) -> InputImage | None:
 
 
 def _owner(request: Request, task: Task) -> bool:
-    current = getattr(request.state, "key_id", None)
-    if current == "admin":
-        return True
-    owner = task.request.get("key_id")
-    # Tasks created before key scoping existed have no owner; keep them visible
-    # to the legacy key that actually created them.
-    return owner is None or owner == current
+    return visible(task.request.get("key_id"),
+                   getattr(request.state, "key_id", None))
 
 
 def _video_id(task_id: str) -> str:
@@ -277,8 +280,17 @@ async def _parse_create(request: Request) -> dict[str, Any]:
             "input_reference": reference,
             "image": fields.get("image"),
         }
-    payload = await request.json()
-    body = VideoCreateRequest.model_validate(payload)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise InvalidRequest("request body must be valid JSON") from None
+    try:
+        body = VideoCreateRequest.model_validate(payload)
+    except ValidationError as exc:
+        first = exc.errors()[0] if exc.errors() else {}
+        loc = ".".join(str(part) for part in first.get("loc") or ())
+        raise InvalidRequest(first.get("msg", "invalid video request"),
+                             param=loc or None) from None
     return body.model_dump()
 
 
@@ -294,7 +306,8 @@ async def create_video(request: Request, svc: Services = Depends(get_services)) 
     seconds = _parse_seconds(data.get("seconds"), data.get("duration"))
     size = _normalize_size(data.get("size"))
     ref = data.get("input_reference") or data.get("image")
-    first_frame = await _load_reference(ref, svc)
+    first_frame = await _load_reference(
+        ref, svc, getattr(request.state, "key_id", None))
     task = _submit_video(request, svc, prompt=prompt, model_name=model_name,
                          spec=spec, seconds=seconds, size=size,
                          first_frame=first_frame)
@@ -310,7 +323,11 @@ async def list_videos(
     svc: Services = Depends(get_services),
 ) -> dict:
     current = getattr(request.state, "key_id", None)
-    owner = None if current == "admin" else current
+    owner = None if current in (None, "admin") else current
+    if after:
+        cursor = svc.tasks.get(_task_id(after))
+        if cursor is None or cursor.kind != "video" or not _owner(request, cursor):
+            raise NotFound(f"video '{after}' not found", param="after")
     tasks, has_more = svc.tasks.query(kind="video", owner=owner, limit=limit,
                                       order=order,
                                       after=_task_id(after) if after else None)

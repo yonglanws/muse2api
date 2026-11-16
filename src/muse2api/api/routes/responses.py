@@ -28,9 +28,11 @@ machinery via ``_build_plan`` / ``_retry_nonstream`` / ``_message_from_text``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import time
+import urllib.parse
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -66,8 +68,106 @@ def _approx_tokens(text: str) -> int:
 
 
 def _sse(payload: dict | str) -> bytes:
-    data = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    return f"data: {data}\n\n".encode()
+    if isinstance(payload, str):
+        return f"data: {payload}\n\n".encode()
+    event_type = str(payload.get("type") or "message")
+    data = json.dumps(payload, ensure_ascii=False)
+    # OpenAI's Responses stream labels every event with an SSE ``event:`` line;
+    # strict clients dispatch on it instead of parsing ``data.type``.
+    return f"event: {event_type}\ndata: {data}\n\n".encode()
+
+
+def _replay_events(response: dict[str, Any], starting_after: int | None = None):
+    """Replay a stored response as the same SSE event sequence as the create call.
+
+    ``GET /v1/responses/{id}?stream=true`` is used by the official SDK's
+    ``responses.retrieve(..., stream=True)``; it needs a terminal event, not a
+    snapshot object.
+    """
+    status = str(response.get("status") or "completed")
+    created = dict(response)
+    created["status"] = "in_progress"
+    created["output"] = []
+    created["usage"] = None
+    created["completed_at"] = None
+
+    seq = 0
+
+    def emit(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal seq
+        payload["sequence_number"] = seq
+        seq += 1
+        return payload
+
+    events: list[dict[str, Any]] = [
+        emit({"type": "response.created", "response": created}),
+        emit({"type": "response.in_progress", "response": created}),
+    ]
+    for output_index, item in enumerate(response.get("output") or []):
+        item_type = item.get("type")
+        if item_type == "message":
+            pending = {**item, "status": "in_progress", "content": []}
+            events.append(emit({"type": "response.output_item.added",
+                                "output_index": output_index, "item": pending}))
+            for content_index, part in enumerate(item.get("content") or []):
+                text = str(part.get("text") or "")
+                annotations = part.get("annotations") or []
+                events.append(emit({
+                    "type": "response.content_part.added",
+                    "item_id": item.get("id"), "output_index": output_index,
+                    "content_index": content_index,
+                    "part": {"type": "output_text", "text": "",
+                             "annotations": [], "logprobs": []}}))
+                events.append(emit({
+                    "type": "response.output_text.delta",
+                    "item_id": item.get("id"), "output_index": output_index,
+                    "content_index": content_index,
+                    "delta": text, "logprobs": []}))
+                for annotation_index, annotation in enumerate(annotations):
+                    events.append(emit({
+                        "type": "response.output_text.annotation.added",
+                        "item_id": item.get("id"), "output_index": output_index,
+                        "content_index": content_index,
+                        "annotation_index": annotation_index,
+                        "annotation": annotation}))
+                events.append(emit({
+                    "type": "response.output_text.done",
+                    "item_id": item.get("id"), "output_index": output_index,
+                    "content_index": content_index, "text": text,
+                    "logprobs": []}))
+                events.append(emit({
+                    "type": "response.content_part.done",
+                    "item_id": item.get("id"), "output_index": output_index,
+                    "content_index": content_index,
+                    "part": {**part, "logprobs": []}}))
+            events.append(emit({"type": "response.output_item.done",
+                                "output_index": output_index, "item": item}))
+        elif item_type == "function_call":
+            pending = {**item, "status": "in_progress", "arguments": ""}
+            events.append(emit({"type": "response.output_item.added",
+                                "output_index": output_index, "item": pending}))
+            arguments = str(item.get("arguments") or "")
+            events.append(emit({
+                "type": "response.function_call_arguments.delta",
+                "item_id": item.get("id"), "output_index": output_index,
+                "delta": arguments}))
+            events.append(emit({
+                "type": "response.function_call_arguments.done",
+                "item_id": item.get("id"), "output_index": output_index,
+                "arguments": arguments}))
+            events.append(emit({"type": "response.output_item.done",
+                                "output_index": output_index, "item": item}))
+    terminal = {
+        "completed": "response.completed",
+        "incomplete": "response.incomplete",
+        "failed": "response.failed",
+        "cancelled": "response.cancelled",
+    }.get(status, "response.completed")
+    events.append(emit({"type": terminal, "response": response}))
+    for event in events:
+        if starting_after is not None and event["sequence_number"] <= starting_after:
+            continue
+        yield event
 
 
 class ResponseRequest(BaseModel):
@@ -97,16 +197,19 @@ class ResponseRequest(BaseModel):
     top_logprobs: int | None = None
     safety_identifier: str | None = None
     prompt_cache_key: str | None = None
+    prompt: Any = None
     # {"format": {...}} — mapped onto the chat machinery's response_format.
     text: dict[str, Any] | None = None
 
     model_config = ConfigDict(extra="allow")
 
 
-# Item types the official SDK round-trips but muse.ai cannot fulfil. Function
-# calling IS supported since 0.10.0 (function_call / function_call_output).
-_UNSUPPORTED_ITEMS = {"reasoning", "computer_call", "file_search_call",
-                      "web_search_call", "image_generation_call", "item_reference"}
+# Item types the official SDK round-trips but muse.ai cannot fulfil. Reasoning
+# and hosted-search results are outputs, not inputs: clients that echo a full
+# transcript back can safely have them ignored.
+_UNSUPPORTED_ITEMS = {"computer_call", "item_reference"}
+_SKIPPABLE_ITEMS = {"reasoning", "file_search_call", "web_search_call",
+                    "image_generation_call"}
 
 
 def _text_format_to_response_format(text: dict[str, Any] | None) -> tuple[
@@ -151,6 +254,8 @@ def _to_messages(body: ResponseRequest) -> list[dict]:
             if not isinstance(item, dict):
                 raise InvalidRequest("input items must be objects", param="input")
             itype = item.get("type")
+            if itype in _SKIPPABLE_ITEMS:
+                continue
             if itype in _UNSUPPORTED_ITEMS:
                 raise InvalidRequest(
                     f"input item type '{itype}' is not supported: "
@@ -166,10 +271,27 @@ def _to_messages(body: ResponseRequest) -> list[dict]:
                 })
             elif itype == "function_call_output":
                 output = item.get("output")
+                if isinstance(output, str):
+                    content: Any = output
+                elif isinstance(output, list):
+                    # The Responses API allows text/image/file parts here; keep
+                    # attachments instead of stringifying the whole list.
+                    parts: list[dict] = []
+                    for part in output:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") in ("input_text", "text", "output_text"):
+                            parts.append({"type": "text",
+                                          "text": part.get("text") or ""})
+                        elif part.get("type") in ("input_image", "input_file"):
+                            parts.append({k: v for k, v in part.items()
+                                          if k not in ("id", "status")})
+                    content = parts or ""
+                else:
+                    content = json.dumps(output, ensure_ascii=False)
                 messages.append({"role": "tool",
                                  "tool_call_id": item.get("call_id") or "",
-                                 "content": output if isinstance(output, str)
-                                 else json.dumps(output, ensure_ascii=False)})
+                                 "content": content})
             elif itype in ("input_image", "input_file", "input_audio"):
                 # Standalone attachment items become a one-part message; the
                 # chat flatten layer maps them onto file_ref attachments.
@@ -186,6 +308,40 @@ def _to_messages(body: ResponseRequest) -> list[dict]:
         raise InvalidRequest("input must be a string or a list of items",
                              param="input")
     return messages
+
+
+async def _resolve_file_urls(messages: list[dict], svc: Services) -> None:
+    """Turn ``input_file.file_url`` attachments into inline data URLs.
+
+    The upstream attachment channel accepts bytes, not remote URLs, so the
+    gateway fetches public URLs itself (SSRF-guarded by ``load_image_ref``).
+    """
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") not in (
+                    "file", "input_file"):
+                continue
+            nested = part.get("file") if isinstance(part.get("file"), dict) else None
+            holder = nested or part
+            url = holder.get("file_url") or part.get("file_url")
+            if not url:
+                continue
+            try:
+                data, mime = await load_image_ref(str(url), timeout=20.0)
+            except Muse2APIError as exc:
+                raise InvalidRequest(
+                    f"file_url could not be fetched: {exc.message}",
+                    param="input_file") from exc
+            holder["file_data"] = (
+                f"data:{mime};base64,{base64.b64encode(data).decode()}")
+            if not holder.get("filename"):
+                name = urllib.parse.urlparse(str(url)).path.rsplit("/", 1)[-1]
+                if name:
+                    holder["filename"] = name
+            holder.pop("file_url", None)
 
 
 def _message_item(msg_id: str, text: str, annotations: list[dict] | None = None) -> dict:
@@ -399,7 +555,9 @@ def _response_object(resp_id: str, created: int, model: str, *, status: str = "c
             "reasoning": {"effort": effort, "summary": summary, "context": context},
             "store": store, "text": {"format": text_format},
             "truncation": truncation or "disabled",
-            "usage": _usage(input_text, output_text), "user": user}
+            "usage": _usage(input_text, output_text)
+            if status in ("completed", "incomplete") else None,
+            "user": user}
 
 
 @router.post("/v1/responses")
@@ -419,7 +577,12 @@ async def create_response(body: ResponseRequest, request: Request,
         raise InvalidRequest(
             "conversations are not supported; continue a reply with "
             "previous_response_id", param="conversation")
-    if body.service_tier not in (None, "auto", "default"):
+    if body.prompt is not None:
+        raise InvalidRequest(
+            "prompt templates are not supported; inline the prompt text in "
+            "instructions", param="prompt")
+    if body.service_tier not in (None, "auto", "default", "flex",
+                                     "scale", "priority", "fast"):
         raise InvalidRequest(
             f"service_tier '{body.service_tier}' is not available for muse models",
             param="service_tier")
@@ -428,6 +591,7 @@ async def create_response(body: ResponseRequest, request: Request,
             "log probabilities are not supported by muse models",
             param="top_logprobs")
     body.metadata = validate_metadata(body.metadata)
+    owner = getattr(request.state, "key_id", None)
 
     own_messages = _to_messages(body)
     # ``input_items`` returns the request's input items; instructions are a
@@ -437,7 +601,7 @@ async def create_response(body: ResponseRequest, request: Request,
         input_source = _to_messages(body.model_copy(update={"instructions": None}))
     chain_hint = None
     if body.previous_response_id:
-        entry = svc.responses.get(body.previous_response_id)
+        entry = svc.responses.get(body.previous_response_id, owner)
         if entry is None:
             raise NotFound(
                 f"No response found with id '{body.previous_response_id}'.",
@@ -451,11 +615,12 @@ async def create_response(body: ResponseRequest, request: Request,
 
     if not own_messages:
         raise InvalidRequest("input contains no text or images", param="input")
+    await _resolve_file_urls(own_messages, svc)
 
     # Responses fields mapped onto the chat planner: tools/tool_choice, and
     # text.format → response_format; max_output_tokens → max_tokens (the cap).
     response_format, text_format = _text_format_to_response_format(body.text)
-    plan_messages = svc.files.expand_messages(own_messages)
+    plan_messages = svc.files.expand_messages(own_messages, owner)
     chat_body = ChatCompletionRequest(
         model=body.model,
         messages=[ChatMessage(role=m["role"], content=m.get("content"))
@@ -528,19 +693,25 @@ async def create_response(body: ResponseRequest, request: Request,
             if cancel.is_set():
                 # cancel_response already persisted the cancelled object; a
                 # partial stream finishing must not rewrite it as completed.
-                entry = svc.responses.get(resp_id) or {}
+                entry = svc.responses.get(resp_id, owner) or {}
                 if (entry.get("response") or {}).get("status") == "cancelled":
                     return
             try:
                 svc.responses.save(resp_id, model=model_name,
                                    messages=own_messages + [final_message], hint=hint,
-                                   response=response, input_messages=input_source)
+                                   response=response, input_messages=input_source, owner=owner)
             except OSError:
                 log.exception("failed to persist response %s", resp_id)
 
     def fail_chain(exc: Muse2APIError) -> None:
         if not body.store:
             return
+        if exc.code == "upstream_quota_exhausted":
+            error_code = "rate_limit_exceeded"
+        elif exc.code == "invalid_request":
+            error_code = "invalid_prompt"
+        else:
+            error_code = "server_error"
         try:
             failed = _response_object(
                 resp_id, created, model_name, status="failed", output=[],
@@ -550,7 +721,7 @@ async def create_response(body: ResponseRequest, request: Request,
                 store=body.store, tools=body.tools,
                 max_output_tokens=body.max_output_tokens,
                 text_format=text_format,
-                error={"code": exc.code, "message": exc.message}, **echo)
+                error={"code": error_code, "message": exc.message}, **echo)
             save_chain({"role": "assistant", "content": ""}, failed)
         except OSError:
             log.exception("failed to persist failed response %s", resp_id)
@@ -566,12 +737,12 @@ async def create_response(body: ResponseRequest, request: Request,
         store=body.store, tools=body.tools,
         max_output_tokens=body.max_output_tokens,
         text_format=text_format, **echo)
-    svc.responses.start_live(resp_id, cancel, snapshot)
+    svc.responses.start_live(resp_id, cancel, snapshot, owner=owner)
     if body.store:
         # Make the response retrievable while it is still running (OpenAI does
         # this too); save_chain/save_cancelled overwrite it when it settles.
         svc.responses.save(resp_id, model=model_name, messages=own_messages,
-                           hint=hint, response=snapshot, input_messages=input_source)
+                           hint=hint, response=snapshot, input_messages=input_source, owner=owner)
 
     if not body.stream:
         try:
@@ -589,15 +760,16 @@ async def create_response(body: ResponseRequest, request: Request,
                 return cancelled
             text = await _retry_nonstream(text, plan, req, svc, plan_messages)
             message, finish = _message_from_text(plan, text)
-            suffix = _media_suffix(req.media, svc, base)
+            suffix = "" if plan.json_directive else _media_suffix(req.media, svc, base)
             if message.get("tool_calls"):
                 output = [_function_call_item(call) for call in message["tool_calls"]]
                 usage_text = json.dumps(message["tool_calls"], ensure_ascii=False)
             else:
-                content = (message.get("content") or "") + suffix
+                model_text = message.get("content") or ""
+                content = model_text + suffix
                 annotations = _response_annotations(content, req.citations)
                 output = [_message_item(msg_id, content, annotations)]
-                usage_text = content
+                usage_text = model_text
             incomplete = {"reason": "max_output_tokens"} if finish == "length" else None
             result = _response_object(
                 resp_id, created, model_name,
@@ -663,8 +835,8 @@ async def create_response(body: ResponseRequest, request: Request,
                         pending.cancel()
                 text = await _retry_nonstream(text, plan, req, svc, plan_messages)
                 message, _finish = _message_from_text(plan, text)
-                buffered_content = (message.get("content") or "") + _media_suffix(
-                    req.media, svc, base)
+                buffered_content = (message.get("content") or "") + (
+                "" if plan.json_directive else _media_suffix(req.media, svc, base))
                 buffered_annotations = _response_annotations(buffered_content,
                                                              req.citations)
                 if message.get("tool_calls"):
@@ -700,7 +872,7 @@ async def create_response(body: ResponseRequest, request: Request,
                                 "sequence_number": seq, "item_id": msg_id,
                                 "output_index": 0, "content_index": 0,
                                 "part": {"type": "output_text", "text": "",
-                                         "annotations": []}})
+                                         "annotations": [], "logprobs": []}})
                     seq += 1
                     yield _sse({"type": "response.output_text.delta",
                                 "sequence_number": seq, "item_id": msg_id,
@@ -723,7 +895,8 @@ async def create_response(body: ResponseRequest, request: Request,
                                 "sequence_number": seq, "item_id": msg_id,
                                 "output_index": 0, "content_index": 0,
                                 "part": {"type": "output_text", "text": content,
-                                         "annotations": buffered_annotations}})
+                                         "annotations": buffered_annotations,
+                                         "logprobs": []}})
                     seq += 1
                     yield _sse({"type": "response.output_item.done",
                                 "sequence_number": seq, "output_index": 0,
@@ -819,7 +992,8 @@ async def create_response(body: ResponseRequest, request: Request,
             seq += 1
             yield _sse({"type": "response.content_part.added", "sequence_number": seq,
                         "item_id": msg_id, "output_index": 0, "content_index": 0,
-                        "part": {"type": "output_text", "text": "", "annotations": []}})
+                        "part": {"type": "output_text", "text": "", "annotations": [],
+                                 "logprobs": []}})
             seq += 1
             produced = first or ""
 
@@ -854,7 +1028,7 @@ async def create_response(body: ResponseRequest, request: Request,
             if hit_cap:
                 cancel.set()
             model_text = produced
-            suffix = _media_suffix(req.media, svc, base)
+            suffix = "" if plan.json_directive else _media_suffix(req.media, svc, base)
             if suffix:
                 produced += suffix
                 yield _sse(delta_event(suffix))
@@ -874,7 +1048,7 @@ async def create_response(body: ResponseRequest, request: Request,
             yield _sse({"type": "response.content_part.done", "sequence_number": seq,
                         "item_id": msg_id, "output_index": 0, "content_index": 0,
                         "part": {"type": "output_text", "text": produced,
-                                 "annotations": annotations}})
+                                 "annotations": annotations, "logprobs": []}})
             seq += 1
             yield _sse({"type": "response.output_item.done", "sequence_number": seq,
                         "output_index": 0,
@@ -885,7 +1059,7 @@ async def create_response(body: ResponseRequest, request: Request,
                 resp_id, created, model_name,
                 status="incomplete" if incomplete else "completed",
                 output=[_message_item(msg_id, produced, annotations)],
-                input_text=input_text, output_text=produced,
+                input_text=input_text, output_text=model_text,
                 instructions=body.instructions,
                 previous_response_id=body.previous_response_id,
                 store=body.store, tools=body.tools,
@@ -932,12 +1106,13 @@ async def create_response(body: ResponseRequest, request: Request,
 
 
 @router.post("/v1/responses/input_tokens")
-async def count_input_tokens(body: ResponseRequest,
+async def count_input_tokens(body: ResponseRequest, request: Request,
                              svc: Services = Depends(get_services)) -> dict:
     """Count the input tokens a create call would use, without generating."""
+    owner = getattr(request.state, "key_id", None)
     messages = _to_messages(body)
     if body.previous_response_id:
-        entry = svc.responses.get(body.previous_response_id)
+        entry = svc.responses.get(body.previous_response_id, owner)
         if entry is None:
             raise NotFound(
                 f"No response found with id '{body.previous_response_id}'.",
@@ -947,7 +1122,8 @@ async def count_input_tokens(body: ResponseRequest,
         messages = stored + messages
     if not messages:
         raise InvalidRequest("input contains no text or images", param="input")
-    expanded = svc.files.expand_messages(messages)
+    await _resolve_file_urls(messages, svc)
+    expanded = svc.files.expand_messages(messages, owner)
     chat_body = ChatCompletionRequest(
         model=body.model,
         messages=[ChatMessage(role=m["role"], content=m.get("content"))
@@ -958,56 +1134,95 @@ async def count_input_tokens(body: ResponseRequest,
         max_completion_tokens=body.max_output_tokens,
     )
     plan = _build_plan(chat_body, expanded, svc.settings)
+    prompt = plan.prompt
+    if plan.json_directive:
+        prompt = f"{plan.json_directive}\n\n{prompt}"
+    if plan.web_search:
+        prompt = f"{_WEB_SEARCH_DIRECTIVE}\n\n{prompt}"
     return {"object": "response.input_tokens",
-            "input_tokens": _approx_tokens(plan.prompt)}
+            "input_tokens": _approx_tokens(prompt)}
 
 
 @router.get("/v1/responses/{response_id}")
-async def retrieve_response(response_id: str,
-                            svc: Services = Depends(get_services)) -> dict:
-    entry = svc.responses.get(response_id)
+async def retrieve_response(
+    response_id: str,
+    request: Request,
+    stream: bool = Query(default=False),
+    starting_after: int | None = Query(default=None),
+    include: list[str] | None = Query(default=None),
+    svc: Services = Depends(get_services),
+):
+    owner = getattr(request.state, "key_id", None)
+    entry = svc.responses.get(response_id, owner)
     if entry is None:
         raise NotFound(f"No response found with id '{response_id}'.",
                        param="response_id")
-    return entry.get("response") or _legacy_response(entry)
+    include = include or []
+    if any(item == "message.output_text.logprobs" for item in include):
+        raise InvalidRequest(
+            "logprobs are not available for muse responses", param="include")
+    response = entry.get("response") or _legacy_response(entry)
+    if not stream:
+        return response
+    if response.get("status") in ("queued", "in_progress"):
+        raise InvalidRequest(
+            "streaming an in-progress response is not supported; "
+            "wait for it to complete", param="stream")
+
+    async def replay() -> AsyncIterator[bytes]:
+        for event in _replay_events(response, starting_after):
+            yield _sse(event)
+
+    return StreamingResponse(replay(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 
 @router.delete("/v1/responses/{response_id}")
-async def delete_response(response_id: str,
+async def delete_response(response_id: str, request: Request,
                           svc: Services = Depends(get_services)) -> dict:
-    if not svc.responses.delete(response_id):
+    owner = getattr(request.state, "key_id", None)
+    # Stop a running turn first so it cannot keep consuming upstream quota.
+    svc.responses.cancel_live(response_id, owner)
+    if not svc.responses.delete(response_id, owner):
         raise NotFound(f"No response found with id '{response_id}'.",
                        param="response_id")
     return {"id": response_id, "object": "response.deleted", "deleted": True}
 
 
 @router.post("/v1/responses/{response_id}/cancel")
-async def cancel_response(response_id: str,
+async def cancel_response(response_id: str, request: Request,
                           svc: Services = Depends(get_services)) -> dict:
-    snapshot = svc.responses.cancel_live(response_id)
+    owner = getattr(request.state, "key_id", None)
+    entry = svc.responses.get(response_id, owner)
+    snapshot = svc.responses.cancel_live(response_id, owner)
     if snapshot is None:
+        if entry is None:
+            raise NotFound(f"No response found with id '{response_id}'.",
+                           param="response_id")
         raise InvalidRequest(
             f"Response '{response_id}' is not in progress and cannot be cancelled.",
             param="response_id")
-    entry = svc.responses.get(response_id)
     if entry is not None:
         # Persist the cancelled object so a later GET does not show in_progress.
         svc.responses.save(response_id, model=entry.get("model") or "muse-chat",
                            messages=entry.get("messages") or [],
                            hint=entry.get("hint"), response=snapshot,
-                           input_messages=entry.get("input_messages"))
+                           input_messages=entry.get("input_messages"),
+                           owner=owner)
     return snapshot
 
 
 @router.get("/v1/responses/{response_id}/input_items")
 async def list_input_items(
     response_id: str,
+    request: Request,
     limit: int = Query(default=20, ge=1, le=100),
     order: str = Query(default="desc", pattern="^(asc|desc)$"),
     after: str | None = Query(default=None),
     svc: Services = Depends(get_services),
 ) -> dict:
-    entry = svc.responses.get(response_id)
+    entry = svc.responses.get(response_id, getattr(request.state, "key_id", None))
     if entry is None:
         raise NotFound(f"No response found with id '{response_id}'.",
                        param="response_id")

@@ -95,6 +95,16 @@ def content_images(content: Any) -> list[str]:
     return out
 
 
+def history_images(history: list[dict[str, Any]]) -> list[str]:
+    """Attachments in prior turns, in message order (system turns excluded)."""
+    out: list[str] = []
+    for msg in history:
+        if str(msg.get("role") or "") in _SYSTEM_ROLES:
+            continue
+        out.extend(content_images(msg.get("content")))
+    return out
+
+
 def extract_system_prompt(messages: list[dict[str, Any]]) -> str:
     """Join every system/developer message into one instruction block."""
     parts: list[str] = []
@@ -217,6 +227,8 @@ def build_prompt(
     """Build a full prompt and a compact follow-up prompt."""
     system_prompt, history, current_msg, tool_cont, turns = _split_request(messages)
     current_text, images = _current_text(current_msg, tool_cont=tool_cont)
+    earlier_images = history_images(history)
+    images = earlier_images + images
 
     sections: list[str] = []
     system = _system_block(system_prompt, max_prompt_chars)
@@ -248,6 +260,7 @@ def build_prompt(
         followup_prompt="\n\n".join(follow),
         turns=turns,
         images=images,
+        images_current_only=not earlier_images,
         system_prompt=system_prompt,
         current_user_text=current_text,
         system_fingerprint=_fingerprint(system_prompt),
@@ -268,6 +281,8 @@ def build_tool_prompt(
     """Build the flat JSON planner prompt used for emulated tool calling."""
     system_prompt, history, current_msg, tool_cont, turns = _split_request(messages)
     current_text, images = _current_text(current_msg, tool_cont=tool_cont)
+    earlier_images = history_images(history)
+    images = earlier_images + images
     specs = tool_specs(tools, compact=True)
     results = [content_to_text(m.get("content")) for m in messages
                if str(m.get("role") or "") == "tool"]
@@ -340,6 +355,7 @@ def build_tool_prompt(
         followup_prompt="\n\n".join(follow),
         turns=turns,
         images=images,
+        images_current_only=not earlier_images,
         system_prompt=system_prompt,
         current_user_text=current_text,
         system_fingerprint=_fingerprint(system_prompt),
