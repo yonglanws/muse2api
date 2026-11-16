@@ -55,6 +55,20 @@ class Settings(BaseSettings):
         default=7 * 86400, description="Seconds a stored Responses API conversation "
         "stays continuable via previous_response_id (data/responses.json)."
     )
+    chat_store_ttl: int = Field(
+        default=30 * 86400, description="Seconds a Chat Completions response created "
+        "with store=true stays retrievable (data/chat_completions.json). OpenAI keeps "
+        "stored completions for at least 30 days."
+    )
+    file_max_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        description="Largest file accepted by POST /v1/files (OpenAI's own limit "
+        "is 512 MB; the gateway keeps uploads in data/files/).",
+    )
+    files_retention_days: float = Field(
+        default=30, description="Days uploaded files are kept in data/files. "
+        "0 disables automatic cleanup.",
+    )
 
     # --- upstream driver ---
     driver: DriverName = "mock"
@@ -154,6 +168,18 @@ class Settings(BaseSettings):
         "client-command use. Originals are backed up under data/harness_backup/; "
         "/admin/harness can restore them.",
     )
+    chat_media: bool = Field(
+        default=True,
+        description="Re-host artifacts the agent generates inside a chat turn "
+        "(images/videos/documents from delta.presentation) and append them to the "
+        "reply, matching muse.ai's web chat. The web UI renders these inline; an "
+        "API-only reply would silently lose them.",
+    )
+    chat_media_max_bytes: int = Field(
+        default=32 * 1024 * 1024,
+        description="Skip inline chat artifacts larger than this when downloading "
+        "them from the account VM (0 means no cap).",
+    )
 
     # --- account pool ---
     pool_strategy: PoolStrategyName = "affinity"
@@ -204,6 +230,18 @@ class Settings(BaseSettings):
         return self.data_dir / "responses.json"
 
     @property
+    def chat_completions_file(self) -> Path:
+        return self.data_dir / "chat_completions.json"
+
+    @property
+    def files_dir(self) -> Path:
+        return self.data_dir / "files"
+
+    @property
+    def files_file(self) -> Path:
+        return self.data_dir / "files.json"
+
+    @property
     def key_file(self) -> Path:
         return self.data_dir / "api_key"
 
@@ -220,7 +258,7 @@ class Settings(BaseSettings):
         return self.browser_profile_dir or (self.data_dir / "browser-profile")
 
     def ensure_dirs(self) -> None:
-        for d in (self.data_dir, self.media_dir):
+        for d in (self.data_dir, self.media_dir, self.files_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def resolve_api_key(self) -> str:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 
+from muse2api.core.tokens import count_tokens, truncate_tokens
 from test_robustness import StubDriver, _auth, _stub_client
 
 _TOOL_JSON = '{"tool": "get_weather", "arguments": {"city": "Paris"}}'
@@ -36,11 +37,11 @@ def test_unknown_path_returns_openai_envelope(tmp_path):
 
 def test_wrong_method_returns_openai_envelope(tmp_path):
     client = _stub_client(tmp_path, StubDriver("hi"))
-    r = client.get("/v1/chat/completions", headers=_auth())
+    r = client.put("/v1/chat/completions", headers=_auth())
     assert r.status_code == 405
     body = r.json()
     assert body["error"]["message"].startswith(
-        "Not allowed to GET on /v1/chat/completions.")
+        "Not allowed to PUT on /v1/chat/completions.")
     assert body["error"]["type"] == "invalid_request_error"
 
 
@@ -281,13 +282,15 @@ def test_responses_input_file_part_becomes_an_attachment(tmp_path):
     assert driver.requests[0].images[0].mime == "text/plain"
 
 
-def test_file_id_is_rejected_with_clear_error(tmp_path):
+def test_file_id_is_resolved_through_the_files_api(tmp_path):
     client = _stub_client(tmp_path, StubDriver("hi"))
+    file_id = client.post("/v1/files", headers=_auth(), files={
+        "file": ("note.txt", b"XYZZY-42", "text/plain")}).json()["id"]
     r = client.post("/v1/chat/completions", headers=_auth(), json={
         "messages": [{"role": "user", "content": [
-            {"type": "file", "file": {"file_id": "file-123"}}]}]})
-    assert r.status_code == 400
-    assert "file_id" in r.json()["error"]["message"]
+            {"type": "file", "file": {"file_id": file_id}}]}]})
+    assert r.status_code == 200
+    assert client.get(f"/v1/files/{file_id}/content", headers=_auth()).content == b"XYZZY-42"
 
 
 # --- E10: max_tokens truncates with finish_reason length ----------------------
@@ -302,7 +305,9 @@ def test_max_tokens_truncates_non_stream(tmp_path):
         "messages": [{"role": "user", "content": "hi"}], "max_tokens": 2})
     body = r.json()
     choice = body["choices"][0]
-    assert len(choice["message"]["content"]) <= 8
+    content = choice["message"]["content"]
+    assert count_tokens(content) <= 2
+    assert content != _LONG
     assert choice["finish_reason"] == "length"
 
 
@@ -324,7 +329,8 @@ def test_max_tokens_truncates_stream(tmp_path):
         content += choice["delta"].get("content") or ""
         if choice["finish_reason"]:
             finish = choice["finish_reason"]
-    assert content == _LONG[:8]
+    assert content == truncate_tokens(_LONG, 2)
+    assert count_tokens(content) <= 2
     assert finish == "length"
 
 
@@ -336,5 +342,7 @@ def test_responses_max_output_tokens_marks_incomplete(tmp_path):
     body = r.json()
     assert body["status"] == "incomplete"
     assert body["incomplete_details"] == {"reason": "max_output_tokens"}
-    assert len(body["output"][0]["content"][0]["text"]) <= 8
+    text = body["output"][0]["content"][0]["text"]
+    assert count_tokens(text) <= 2
+    assert text != _LONG
     assert body["usage"]["output_tokens"] <= 2

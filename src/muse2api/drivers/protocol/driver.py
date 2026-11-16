@@ -29,7 +29,9 @@ from ...errors import UpstreamError, UpstreamRefused, UpstreamTimeout
 from ...upstream import muse
 from ..base import (
     ChatRequest,
+    Citation,
     DriverCapabilities,
+    GeneratedMedia,
     ImageRequest,
     InputImage,
     MediaResult,
@@ -39,7 +41,12 @@ from ..base import (
 )
 from .client import MuseProtocolClient, Subscription
 from .harness import HarnessPolicy
-from .media import _media_candidates, resource_kind, resource_mime
+from .media import (
+    _media_candidates,
+    resource_kind,
+    resource_label,
+    resource_mime,
+)
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +171,7 @@ class _AccountState:
 class _Outcome:
     text: str = ""
     resources: list[dict[str, Any]] = field(default_factory=list)
+    citations: list[dict[str, str]] = field(default_factory=list)
     done: dict[str, Any] | None = None
     last_seq: int = 0
     native_calls: list[dict[str, Any]] = field(default_factory=list)
@@ -575,6 +583,7 @@ class ProtocolDriver(MuseDriver):
                                               else thread.image_count + len(images))
                         thread.last_seq = max(thread.last_seq, outcome.last_seq)
                         thread.last_used = time.time()
+                        await self._expose_turn_extras(client, req, outcome)
                 except asyncio.CancelledError:
                     raise
                 except UpstreamError:
@@ -664,6 +673,11 @@ class ProtocolDriver(MuseDriver):
                     for item in outcome.resources[before:]:
                         yield "resource", item["resource"]
                 elif name == "delta.message_done" and device == node_id:
+                    # Generated media can ride the final transcript envelope
+                    # instead of a live delta.presentation; citations are only
+                    # reported here.
+                    _media_candidates(payload.get("presentations"), outcome.resources)
+                    self._harvest_citations(payload, outcome)
                     outcome.done = payload
                     status = payload.get("status")
                     # "interrupted" is what the web stop button and our own
@@ -742,6 +756,74 @@ class ProtocolDriver(MuseDriver):
                 if isinstance(part, dict) and part.get("type") == "text":
                     parts.append(str(part.get("text") or ""))
         return "".join(parts)
+
+    @staticmethod
+    def _harvest_citations(done: dict[str, Any], outcome: _Outcome) -> None:
+        """Collect the web sources the agent actually read (web UI's source
+        cards). muse.ai reports them in ``message_done.resources`` as
+        ``{"kind": "citation", "uri": ..., "label": ..., "metadata": ...}``."""
+        for item in done.get("resources") or []:
+            if not isinstance(item, dict) or item.get("kind") != "citation":
+                continue
+            url = str(item.get("uri") or "").strip()
+            if not url.startswith(("http://", "https://")):
+                continue
+            title = str(item.get("label") or "").strip()
+            if not title:
+                meta = item.get("metadata")
+                if isinstance(meta, str) and meta.strip().startswith("{"):
+                    try:
+                        meta = json.loads(meta)
+                    except (TypeError, ValueError):
+                        meta = None
+                if isinstance(meta, dict):
+                    title = str(meta.get("domain") or "").strip()
+            if not any(c["url"] == url for c in outcome.citations):
+                outcome.citations.append({"url": url, "title": title})
+
+    async def _expose_turn_extras(self, client: MuseProtocolClient,
+                                  req: ChatRequest, outcome: _Outcome) -> None:
+        """Copy citations and generated artifacts onto the request.
+
+        The OpenAI routes run after the driver generator is exhausted, so this
+        is where a web-chat turn becomes API-visible: source URLs for
+        annotations, and the image/video/document bytes the web UI renders
+        inline. Download failures never fail the chat itself.
+        """
+        req.citations.extend(
+            Citation(url=item["url"], title=item["title"])
+            for item in outcome.citations
+        )
+        if not outcome.resources or not self.settings.chat_media:
+            return
+        limit = max(0, self.settings.chat_media_max_bytes)
+        seen: set[str] = set()
+        for item in outcome.resources:
+            resource = item.get("resource") or {}
+            path = str(resource.get("path") or "")
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            kind = resource_kind(resource)
+            size = resource.get("byte_len")
+            if limit and isinstance(size, int) and size > limit:
+                log.info("inline %s skipped: %d bytes exceeds chat_media_max_bytes",
+                         path, size)
+                continue
+            try:
+                data = await asyncio.wait_for(
+                    client.download_bytes(resource), timeout=90)
+            except Exception as exc:  # noqa: BLE001 - the reply itself is fine
+                log.info("inline artifact download failed for %s: %s", path, exc)
+                continue
+            if not data or (limit and len(data) > limit):
+                continue
+            req.media.append(GeneratedMedia(
+                data=data,
+                mime=resource_mime(resource, data),
+                kind=kind,
+                label=resource_label(resource),
+            ))
 
     # ------------------------------------------------------------ media
     @staticmethod

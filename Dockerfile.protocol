@@ -5,11 +5,16 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+ARG HTTPS_PROXY
 RUN pip install --no-cache-dir . \
+ && mkdir -p /app/tiktoken-cache \
+ && HTTPS_PROXY=$HTTPS_PROXY TIKTOKEN_CACHE_DIR=/app/tiktoken-cache \
+    python -c "import tiktoken; tiktoken.get_encoding('o200k_base')" \
  && rm -rf /root/.cache/pip
 
 ENV MUSE2API_HOST=0.0.0.0 \
-    MUSE2API_DATA_DIR=/app/data
+    MUSE2API_DATA_DIR=/app/data \
+    TIKTOKEN_CACHE_DIR=/app/tiktoken-cache
 
 RUN mkdir -p /app/data && chown -R muse:muse /app
 USER muse

@@ -24,6 +24,9 @@ class ResponseStore:
         self.path = path
         self.ttl = max(0, ttl_seconds)
         self._items: dict[str, dict[str, Any]] = {}
+        # In-flight responses, for POST /v1/responses/{id}/cancel. Never
+        # persisted: a restart cannot cancel a turn that no longer exists.
+        self._live: dict[str, dict[str, Any]] = {}
 
     def load(self) -> None:
         if not self.path.is_file():
@@ -65,12 +68,43 @@ class ResponseStore:
         return entry
 
     def save(self, response_id: str, *, model: str, messages: list[dict],
-             hint: str | None) -> None:
+             hint: str | None, response: dict[str, Any] | None = None,
+             input_messages: list[dict] | None = None) -> None:
         self._items[response_id] = {
             "id": response_id,
             "created": time.time(),
             "model": model,
             "messages": messages,
             "hint": hint,
+            # The serialized response object so GET /v1/responses/{id} returns
+            # exactly what the create call returned (0.11.0).
+            "response": response,
+            # The request's unconverted chat messages, for input_items.
+            "input_messages": input_messages if input_messages is not None else messages,
         }
         self._persist()
+
+    def delete(self, response_id: str) -> bool:
+        entry = self._items.pop(response_id, None)
+        if entry is None:
+            return False
+        self._persist()
+        return True
+
+    # ------------------------------------------------------------ live turns
+    def start_live(self, response_id: str, cancel, snapshot: dict[str, Any]) -> None:
+        self._live[response_id] = {"cancel": cancel, "snapshot": snapshot}
+
+    def finish_live(self, response_id: str) -> None:
+        self._live.pop(response_id, None)
+
+    def cancel_live(self, response_id: str) -> dict[str, Any] | None:
+        live = self._live.get(response_id)
+        if live is None:
+            return None
+        cancel = live.get("cancel")
+        if cancel is not None:
+            cancel.set()
+        snapshot = dict(live.get("snapshot") or {})
+        snapshot["status"] = "cancelled"
+        return snapshot

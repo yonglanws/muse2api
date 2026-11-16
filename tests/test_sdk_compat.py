@@ -64,3 +64,55 @@ async def test_sdk_responses_streaming(client, auth):
         assert "sdk stream hello" in final.output_text
     finally:
         await http_client.aclose()
+
+
+async def test_sdk_videos_roundtrip(client, auth):
+    """The official videos client always sends multipart; it must poll to
+    ``completed``, list, download, remix and delete against our task store."""
+    token = auth["Authorization"].split(" ", 1)[1]
+    sdk, http_client = _sdk_client(client, token)
+    try:
+        created = await sdk.videos.create(
+            prompt="sdk waves", model="sora-2", seconds="4", size="1280x720")
+        assert created.object == "video"
+        assert created.model == "sora-2"
+        assert created.seconds == "4"
+        assert created.size == "1280x720"
+
+        done = await sdk.videos.poll(created.id)
+        assert done.status == "completed"
+
+        content = await sdk.videos.download_content(created.id)
+        assert content.content.startswith(b"\x00\x00\x00\x18ftyp")
+
+        page = await sdk.videos.list(limit=5)
+        assert any(video.id == created.id for video in page.data)
+
+        remixed = await sdk.videos.remix(created.id, prompt="sdk remix")
+        assert remixed.remixed_from_video_id == created.id
+        assert remixed.id != created.id
+
+        deleted = await sdk.videos.delete(created.id)
+        assert deleted.deleted is True and deleted.object == "video.deleted"
+    finally:
+        await http_client.aclose()
+
+
+async def test_sdk_videos_input_reference_and_unsupported_edits(client, auth):
+    from openai import APIStatusError
+
+    token = auth["Authorization"].split(" ", 1)[1]
+    sdk, http_client = _sdk_client(client, token)
+    try:
+        created = await sdk.videos.create(
+            prompt="sdk first frame",
+            input_reference=("ref.png", b"\x89PNG-sdk", "image/png"))
+        assert created.object == "video"
+        try:
+            await sdk.videos.edit(prompt="edit it",
+                                  video=("v.mp4", b"\x00\x00\x00\x18ftyp", "video/mp4"))
+            raise AssertionError("expected 501")
+        except APIStatusError as exc:
+            assert exc.status_code == 501
+    finally:
+        await http_client.aclose()

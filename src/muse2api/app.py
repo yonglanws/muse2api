@@ -45,6 +45,11 @@ async def _housekeeping(services: Services) -> None:
             removed = services.media.prune(services.settings.media_retention_days * 86400)
             if removed:
                 log.info("media cleanup: removed %d expired file(s)", removed)
+            services.completions.prune()
+            removed_files = services.files.prune(
+                services.settings.files_retention_days * 86400)
+            if removed_files:
+                log.info("file cleanup: removed %d expired upload(s)", removed_files)
 
 
 def create_app(settings: Settings | None = None, driver: MuseDriver | None = None) -> FastAPI:
@@ -57,6 +62,8 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
         await services.pool.load()
         await services.tasks.load()
         services.responses.load()
+        services.completions.load()
+        services.files.load()
         await services.keys.load()
         await services.requests.open()
         await services.requests.prune(settings.request_log_retention_days)

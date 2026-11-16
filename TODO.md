@@ -38,6 +38,15 @@
 | G1 | 原生客户端工具通道 | P1 | `drivers/protocol/` | | ✅ 已完成（0.5.1） |
 | G2 | 中文控制台与项目文档 | P2 | `web/` · `docs/` | | ✅ 已完成（0.5.3） |
 | G3 | 纯网页反代重构 | P1 | `api/routes/chat.py` · `core/` | | ✅ 已完成（0.6.0） |
+| H1 | 网页对话产物透出（图片/视频/文档 + 来源引用） | P1 | `drivers/protocol/` · `api/routes/chat.py` | | ✅ 已完成（0.11.0） |
+| H2 | OpenAI Files API 与 `file_id` 解析 | P1 | `services/file_store.py` · `api/routes/files.py` | | ✅ 已完成（0.11.0） |
+| H3 | Responses 检索/删除/input_items/input_tokens/cancel | P1 | `api/routes/responses.py` | | ✅ 已完成（0.11.0） |
+| H4 | Chat 参数补齐（max_completion_tokens / parallel_tool_calls / legacy functions / web_search_options） | P1 | `api/routes/chat.py` · `api/schemas.py` | | ✅ 已完成（0.11.0） |
+| H5 | Stored Chat Completions（store / list / retrieve / update / delete / messages） | P1 | `services/chat_store.py` · `api/routes/chat.py` | | ✅ 已完成（0.12.0） |
+| H6 | tiktoken 精确 token 计数与截断（usage / max_tokens） | P1 | `core/tokens.py` | | ✅ 已完成（0.12.0） |
+| H7 | Sora 形状 `/v1/videos`（multipart/JSON、content、remix、分页、状态机） | P1 | `api/routes/videos.py` | | ✅ 已完成（0.12.0） |
+| H8 | Responses 对象面补齐（completed_at/service_tier/usage details/instructions 语义/取消持久化） | P1 | `api/routes/responses.py` | | ✅ 已完成（0.12.0） |
+| H9 | Files 过期/分页/purpose 校验；Images/Models 字段补齐与不可表达参数 400 | P1 | `api/routes/files.py` · `images.py` · `models.py` | | ✅ 已完成（0.12.0） |
 
 ---
 
@@ -85,6 +94,12 @@
 | 0.5.1 | 原生客户端工具通道：`register_capabilities` / `client.invoke` → 标准 `tool_calls` |
 | 0.5.3 | 通用 muse.ai 网页反代定位；中文文档体系；全新中文控制台 |
 | 0.6.0 | 移除平台专用兼容层；纯 OpenAI 协议反代；通用 system 提示词桥接 |
+| 0.7.0 | VM 托管规则（IDENTITY/SOUL/AGENTS）+ 原生工具多调用 + 记忆隔离 |
+| 0.8.0 | 单账号并发池：每账号多 Noise 连接、线程粘连接、12 并发 |
+| 0.9.0 | 中止安全：`chat.cancel`、中断轮次丢弃、JSON 模式、stop、n>1、CORS |
+| 0.10.0 | 错误/头/多选/Responses 状态与函数调用；file_ref 任意附件；严格 muse 模型名 |
+| 0.11.0 | 网页对话产物（图片/视频/文档）与来源引用透出；Files API；Responses 检索面；Chat 参数补齐 |
+| 0.12.0 | Stored Chat Completions；tiktoken 用量/截断；Sora 形状 `/v1/videos`；Responses 对象面与 instructions 语义；Files 过期/分页 |
 
 详细记录：
 

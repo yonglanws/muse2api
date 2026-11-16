@@ -58,6 +58,16 @@ class MediaStore:
             raise NotFound("media not found")
         return p
 
+    def delete(self, name: str) -> bool:
+        """Remove one stored media file (used by DELETE /v1/videos/{id})."""
+        if not _SAFE_NAME.match(name or ""):
+            return False
+        path = self.root / name
+        if not path.is_file():
+            return False
+        path.unlink()
+        return True
+
     def prune(self, max_age_seconds: float) -> int:
         """Delete stored media files older than ``max_age_seconds``.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -97,12 +98,48 @@ def resource_kind(resource: dict[str, Any]) -> str:
     path = str(resource.get("path") or resource.get("uri")
                or resource.get("image_path") or resource.get("video_path") or "")
     suffix = Path(path).suffix.lower()
-    return "video" if suffix in (".mp4", ".webm", ".mov", ".m4v") else "image"
+    if suffix in (".mp4", ".webm", ".mov", ".m4v"):
+        return "video"
+    if suffix in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".bmp"):
+        return "image"
+    # Documents, archives, audio, ... are returned as downloadable files.
+    return "file"
 
 
 def resource_mime(resource: dict[str, Any], data: bytes) -> str:
     mime = str(resource.get("mime") or resource.get("mime_type") or "")
     if mime:
         return mime
-    return image_magic_mime(data) or (
-        "video/mp4" if resource_kind(resource) == "video" else "image/png")
+    magic = image_magic_mime(data)
+    if magic:
+        return magic
+    kind = resource_kind(resource)
+    if kind == "video":
+        return "video/mp4"
+    if kind == "file":
+        guessed = mimetypes.guess_type(str(resource.get("path") or ""))[0]
+        return guessed or "application/octet-stream"
+    return "image/png"
+
+
+def resource_label(resource: dict[str, Any]) -> str:
+    """A short human label for a generated artifact (web UI's display text)."""
+    for key in ("label", "display_text", "filename", "name", "title"):
+        value = resource.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:80]
+    data = resource.get("data")
+    if isinstance(data, dict):
+        for key in ("images", "files", "videos", "media"):
+            items = data.get(key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                for field in ("label", "filename", "name"):
+                    value = item.get(field)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()[:80]
+    path = str(resource.get("path") or "")
+    return Path(path).name[:80] if path else ""

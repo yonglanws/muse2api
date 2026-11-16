@@ -6,7 +6,7 @@
 flowchart TB
     subgraph api["api/ — OpenAI 协议层"]
         direction LR
-        api_routes["routes/<br/>chat · images · videos · media<br/>models · responses · health · admin · dashboard"]
+        api_routes["routes/<br/>chat · images · videos · media · files<br/>models · responses · health · admin · dashboard"]
         api_support["schemas.py · deps.py · middleware.py"]
     end
 
@@ -16,6 +16,7 @@ flowchart TB
         svc_tasks["tasks.py<br/>后台长任务"]
         svc_container["container.py<br/>依赖装配"]
         svc_reqlog["request_log.py<br/>请求日志（SQLite）"]
+        svc_files["file_store.py · response_store.py · chat_store.py<br/>上传文件、Responses 链、stored completions"]
     end
 
     subgraph accounts["accounts/ — 账号池"]
@@ -33,7 +34,7 @@ flowchart TB
         core_models["models.py<br/>模型注册与校验"]
         core_prompt["prompt.py<br/>messages → prompt"]
         core_media["media.py · matting.py<br/>媒体存储 · 抠图"]
-        core_compat["system_prompt.py · tool_plan.py<br/>system 提示词与工具调用"]
+        core_compat["system_prompt.py · tool_plan.py · tokens.py<br/>system 提示词、工具调用、tokenizer"]
     end
 
     subgraph drivers["drivers/ — 唯一接触 muse.ai 的层"]

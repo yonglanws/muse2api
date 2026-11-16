@@ -87,6 +87,31 @@ class TaskManager:
     def list(self, limit: int = 100) -> list[Task]:
         return sorted(self._tasks.values(), key=lambda t: t.created_at, reverse=True)[:limit]
 
+    def query(self, *, kind: str | None = None, owner: str | None = None,
+              limit: int = 20, order: str = "desc",
+              after: str | None = None) -> tuple[list[Task], bool]:
+        """Filtered, paginated task view used by the OpenAI video list API."""
+        tasks = [t for t in self._tasks.values() if kind is None or t.kind == kind]
+        if owner is not None:
+            tasks = [t for t in tasks
+                     if t.request.get("key_id") in (None, owner)]
+        reverse = order != "asc"
+        tasks.sort(key=lambda t: (t.created_at, t.id), reverse=reverse)
+        if after:
+            ids = [t.id for t in tasks]
+            if after in ids:
+                tasks = tasks[ids.index(after) + 1:]
+            else:
+                tasks = []
+        has_more = len(tasks) > limit
+        return tasks[:limit], has_more
+
+    def delete(self, task_id: str) -> Task | None:
+        task = self._tasks.pop(task_id, None)
+        if task is not None:
+            self._persist()
+        return task
+
     def submit(self, kind: str, request: dict[str, Any], runner: Runner) -> Task:
         task = Task(kind=kind, request=request)
         self._tasks[task.id] = task

@@ -28,6 +28,28 @@ class InputImage:
 
 
 @dataclass
+class GeneratedMedia:
+    """A file the agent produced inside a chat turn (image, video or document).
+
+    muse.ai shows these inline in its web UI (``delta.presentation``); the
+    gateway re-hosts the bytes so OpenAI-shaped clients can render them too.
+    """
+
+    data: bytes
+    mime: str
+    kind: str = "image"
+    label: str = ""
+
+
+@dataclass
+class Citation:
+    """A web source the agent actually read during the turn."""
+
+    url: str
+    title: str = ""
+
+
+@dataclass
 class ChatRequest:
     prompt: str
     model: str
@@ -60,6 +82,10 @@ class ChatRequest:
     system_prompt: str | None = None
     """System/developer text already folded into the prompt (for logging/tools)."""
     cancel: asyncio.Event | None = None
+    media: list[GeneratedMedia] = field(default_factory=list)
+    """Inline artifacts produced by the turn (populated by the driver)."""
+    citations: list[Citation] = field(default_factory=list)
+    """Web sources read during the turn (populated by the driver)."""
 
 
 @dataclass

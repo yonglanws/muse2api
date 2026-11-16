@@ -12,6 +12,8 @@ from ..core.matting import Matting
 from ..core.media import MediaStore
 from ..drivers.base import MuseDriver
 from ..drivers.registry import create_driver
+from .chat_store import ChatCompletionStore
+from .file_store import FileStore
 from .gateway import Gateway
 from .request_log import RequestLog, current_record
 from .response_store import ResponseStore
@@ -26,7 +28,9 @@ class Services:
     gateway: Gateway
     tasks: TaskManager
     responses: ResponseStore
+    completions: ChatCompletionStore
     media: MediaStore
+    files: FileStore
     matting: Matting
     keys: KeyStore
     requests: RequestLog
@@ -57,7 +61,12 @@ class Services:
             gateway=Gateway(pool, driver, max_failover=settings.max_failover),
             tasks=TaskManager(settings.tasks_file, on_finish=record_outcome),
             responses=ResponseStore(settings.responses_file, ttl_seconds=settings.response_ttl),
+            completions=ChatCompletionStore(settings.chat_completions_file,
+                                            ttl_seconds=settings.chat_store_ttl),
             media=MediaStore(settings.media_dir),
+            files=FileStore(settings.files_dir, settings.files_file,
+                            max_bytes=settings.file_max_bytes,
+                            ttl_seconds=settings.files_retention_days * 86400),
             matting=Matting(settings.matting_model),
             keys=KeyStore(settings.keys_file),
             requests=requests,

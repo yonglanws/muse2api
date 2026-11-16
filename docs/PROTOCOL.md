@@ -102,7 +102,27 @@ MUSE2API_PROTOCOL_THREAD_TTL=21600
 | `text/plain` file_ref（内含指定密语）+ 追问 | Agent 立即读取文件并**精确回答密语**（`XYZZY-42`） |
 | `audio/wav` file_ref + 追问 | 请求被接受；Agent 回答可用 `audio/transcription` 工具处理音频 |
 
-因此 0.10.0 把 OpenAI 的 `file` / `input_file` / `input_audio` 内容部件映射为同样的附件链路：非图片 MIME 一律 `upload_file_ref` → file_ref item（扩展名由 MIME 推导）。这让 API 层获得了网页端"上传附件"的全部能力。
+因此 0.10.0 把 OpenAI 的 `file` / `input_file` / `input_audio` 内容部件映射为同样的附件链路：非图片 MIME 一律 `upload_file_ref` → file_ref item（扩展名由 MIME 推导）。这让 API 层获得了网页端"上传附件"的全部能力。0.11.0 起 `/v1/files` 把上传字节保存在 `data/files`，`file_id` 在提示词构建前展开成同样的内联 data URL，官方 SDK 的"上传一次、多次引用"流程可用。
+
+### 3.4 网页对话产物与来源引用（0.11.0，probe 20）
+
+网页端聊天不只返回文字：Agent 在轮次中会直接产出图片/视频/文档，并在网页搜索后附带来源卡片。这两类事件以前被网关丢弃，0.11.0 起翻译成标准 API 形态。
+
+**产物**：`delta.presentation` 的 payload 形如
+
+```json
+{"kind":"image","image_path":"workspace/imagine_media/x.webp",
+ "data":{"images":[{"path":"sandbox://workspace/imagine_media/x.webp",
+                    "label":"red apple","mime":"image/webp",
+                    "byte_len":220110,"width":1920,"height":1280,
+                    "variants":{"original":"https://<vm>.metaaivm.com/..."}}]}}
+```
+
+`_media_candidates` 从 `path` / `uri` / `image_path` / `video_path` / `metadata.path` 收集资源（跳过 `workspace/user/` 的用户上传），完成后用 `fs.read` 分块下载，按魔数/扩展名判定 MIME，再由路由写入 `data/media` 并追加到回复。实测（真实账号，0.11.0）：红苹果 WebP 15.1s / 184 KB；4 秒海浪 MP4 37.3s / 4.5 MB；流式同样在 finish 前追加 Markdown。下载失败或超过 `MUSE2API_CHAT_MEDIA_MAX_BYTES` 时只跳过产物，不影响文字回复。
+
+**引用**：`delta.message_done.resources` 里的 `{"kind":"citation","uri":...,"label":...,"metadata":"{\"domain\":...}"}` 就是网页端来源卡片。网关去重后输出为 Chat `message.annotations[].url_citation` 或 Responses `output_text.annotations[]`（扁平 `url_citation`）；流式 Responses 额外发 `response.output_text.annotation.added`。实测一次 B200 查询返回 19 条真实来源。
+
+`web_search_options`（Chat）与 `tools:[{"type":"web_search"}]`（Responses）不调用额外接口，而是注入“可联网检索、引用真实来源”的指令，让 Agent 使用它自己的搜索/浏览工具；返回的 citations 仍然来自上游，不会伪造。
 
 ## 4. 系统提示词
 
@@ -195,6 +215,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 | `MUSE2API_TOOL_RETRIES` | `2` | Planner 被拒绝时的重试次数 |
 | `MUSE2API_NATIVE_HARNESS` | `true` | 在账号 VM 的 IDENTITY/SOUL/AGENTS.md 维护托管规则（备份在 `data/harness_backup/`，可用 `/admin/harness` 还原） |
 | `MUSE2API_RESPONSE_TTL` | `604800` | Responses API 存储的对话可被 `previous_response_id` 续聊的秒数（`data/responses.json`，上限 1000 条） |
+| `MUSE2API_CHAT_STORE_TTL` | `2592000` | `store: true` 的 Chat Completions 保留秒数（`data/chat_completions.json`，上限 2000 条） |
 
 ## 8. 已知限制
 
@@ -207,11 +228,12 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 7. **命令注册是连接级的**：同账号所有会话共享已注册命令；无关会话的 Muse 若自发调用会被 `not_available` 拒绝并自行解释。
 8. **图片格式**：返回上游原始格式（常见 WebP），不强制转 PNG；`background=transparent` 仍需要可选 matting extra。
 9. **托管规则影响整个账号**：IDENTITY.md/SOUL.md 的托管段对该账号在 muse.ai 网页端的手工使用也可见。需要原样使用网页端时，先 `POST /admin/harness/{id}/restore` 还原备份。
+10. **token 计数是本地估算**：上游协议不返回计费 token，`usage` 与 `max_tokens` 由网关内置的 `tiktoken o200k_base`（镜像内预缓存）计算；同一段文本与 muse.ai 的计费口径可能有偏差，但截断行为是精确的 token 边界。
 
 ## 9. 部署与回滚
 
 ```bash
-docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.10.0 .
+docker build -f Dockerfile.protocol -t muse2api-web:protocol-0.12.0 .
 docker run -d --name muse2api-web \
   --restart unless-stopped \
   -p 18610:18610 \
@@ -225,7 +247,7 @@ docker run -d --name muse2api-web \
   -e MUSE2API_ACCOUNT_MAX_CONCURRENCY=12 \
   -e MUSE2API_KEEPALIVE_ENABLED=true \
   -e MUSE2API_EMULATE_TOOLS=true \
-  muse2api-web:protocol-0.10.0
+  muse2api-web:protocol-0.12.0
 ```
 
 回滚到浏览器驱动（保留旧容器）：

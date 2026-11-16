@@ -61,17 +61,37 @@ def content_to_text(content: Any) -> str:
 
 
 def content_images(content: Any) -> list[str]:
+    """Attachment refs in a message, in order.
+
+    Despite the historical name this also covers non-image attachments
+    (documents, audio): with a system prompt the prompt bridge, rather than
+    ``flatten_messages``, extracts them, and muse.ai accepts any mime as a
+    file_ref item (probe 17).
+    """
     if not isinstance(content, list):
         return []
     out: list[str] = []
     for part in content:
-        if not isinstance(part, dict) or part.get("type") not in ("image_url", "input_image"):
+        if not isinstance(part, dict):
             continue
-        ref = part.get("image_url")
-        if isinstance(ref, dict):
-            ref = ref.get("url")
-        if isinstance(ref, str) and ref:
-            out.append(ref)
+        ptype = part.get("type")
+        if ptype in ("image_url", "input_image"):
+            ref = part.get("image_url")
+            if isinstance(ref, dict):
+                ref = ref.get("url")
+            if isinstance(ref, str) and ref:
+                out.append(ref)
+        elif ptype in ("file", "input_file"):
+            nested = part.get("file") if isinstance(part.get("file"), dict) else {}
+            ref = nested.get("file_data") or part.get("file_data")
+            if isinstance(ref, str) and ref:
+                out.append(ref)
+        elif ptype in ("input_audio", "audio"):
+            audio = part.get("input_audio") or {}
+            data = audio.get("data") if isinstance(audio, dict) else None
+            fmt = (audio.get("format") if isinstance(audio, dict) else None) or "wav"
+            if data:
+                out.append(f"data:audio/{fmt};base64,{data}")
     return out
 
 
@@ -243,6 +263,7 @@ def build_tool_prompt(
     force_tool: bool = False,
     retry: bool = False,
     native: bool = False,
+    web_search: bool = False,
 ) -> PromptPlan:
     """Build the flat JSON planner prompt used for emulated tool calling."""
     system_prompt, history, current_msg, tool_cont, turns = _split_request(messages)
@@ -260,11 +281,17 @@ def build_tool_prompt(
     if system:
         sections.append(system)
     if native:
+        avoid = "" if web_search else "不要用内置浏览器、搜索或记忆工具代替。"
         sections.append(
             "【真实工具】以上工具也已经注册为本客户端的命令，可以直接调用；"
-            "优先使用这些客户端命令，不要用内置浏览器、搜索或记忆工具代替。"
+            f"优先使用这些客户端命令，{avoid}"
             "如果真实调用了命令，就不要再输出 JSON。绝对不要说“没有这个工具”或“无法调用”。"
         )
+        if web_search:
+            sections.append(
+                "【网页搜索】需要最新或外部事实时，可以使用内置网页搜索/浏览工具查证，"
+                "并引用真正读过的来源 URL；客户端命令仍然优先。"
+            )
     if retry:
         sections.append("【注意】上一轮没有按格式输出。这一次必须只输出一个扁平 JSON 对象。")
     history_text = _history_transcript(history, max_chars=max(1200, max_prompt_chars - 4500))

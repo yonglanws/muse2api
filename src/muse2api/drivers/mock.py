@@ -14,7 +14,9 @@ from collections.abc import AsyncIterator
 from ..accounts.model import Account
 from .base import (
     ChatRequest,
+    Citation,
     DriverCapabilities,
+    GeneratedMedia,
     ImageRequest,
     MediaResult,
     MuseDriver,
@@ -59,6 +61,14 @@ class MockDriver(MuseDriver):
                 return
             await asyncio.sleep(self.delay)
             yield reply[i : i + 8]
+        # A deterministic stand-in for a web-chat turn that generated an image
+        # and read a source page; tests use this to exercise the whole surface.
+        if "[[mock:extras]]" in req.prompt:
+            req.media.append(GeneratedMedia(
+                data=_solid_png(8, 8, (255, 0, 0)), mime="image/png",
+                kind="image", label="mock image"))
+            req.citations.append(Citation(
+                url="https://example.com/source", title="Example source"))
 
     async def generate_image(self, account: Account, req: ImageRequest) -> list[MediaResult]:
         results = []

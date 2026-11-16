@@ -56,7 +56,7 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机�
 
 客户端把工具结果以 `role: "tool"` 发回来后，网关续接同一线程继续回答。流式请求返回 `delta.tool_calls`，`finish_reason` 为 `tool_calls`。
 
-## 参数支持（0.10.0）
+## 参数支持（0.12.0）
 
 | 参数 | 行为 |
 |---|---|
@@ -64,8 +64,16 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机�
 | `response_format: {"type": "json_schema", ...}` | 同上，schema 摘要一并写进指令块 |
 | `stop`（字符串或列表，最多生效于纯文本路径） | 命中即在该序列前截断并结束流式；上游轮次同时被取消（不走完整个生成） |
 | `n > 1` | 非流式：并发独立补全，合并成多个 `choices`（临时线程，不共享会话）；流式：按到达序交错输出带 `index` 的 chunk（与 api.openai.com 一致），`stream_options.include_usage` 会追加 usage chunk |
-| `max_tokens` / `max_output_tokens` | 按 token 近似值（约 4 字符/token）截断输出，`finish_reason: "length"`（Responses：`status: "incomplete"`）——muse.ai 没有原生采样控制，截断是唯一能兑现上限的方式 |
-| `stream_options` | 仅在 `stream: true` 时有效；不带 stream 传会得到 400（与 OpenAI 一致） |
+| `max_tokens` / `max_completion_tokens` / `max_output_tokens` | 用 `tiktoken o200k_base` 精确截断到 token 上限，`finish_reason: "length"`（Responses：`status: "incomplete"`）；`max_completion_tokens` 优先——muse.ai 没有原生采样控制，截断是唯一能兑现上限的方式 |
+| `stream_options` | 仅在 `stream: true` 时有效；不带 stream 传会得到 400（与 OpenAI 一致）；`include_usage` 时每个 chunk 带 `usage: null`，末尾追加空 choices 的 usage chunk |
+| `tools` / `tool_choice` / `parallel_tool_calls` | 函数调用走原生客户端通道或 Planner；`parallel_tool_calls: false` 时每轮最多返回一个调用 |
+| `functions` / `function_call` | legacy 形状自动映射到现代 `tools` / `tool_choice` |
+| `web_search_options` / `tools: [{"type": "web_search"}]` | 驱动 muse.ai 原生网页搜索/读取，来源变成标准 `url_citation` annotations |
+| `store` | `true` 时落盘到 `data/chat_completions.json`，可用 `chat.completions.list/retrieve/update/delete/messages`；默认 `false`（与 OpenAI 一致） |
+| `service_tier` | `auto` / `default` 映射并回显为 `default`；`flex` / `priority` 返回 400（上游没有分级队列） |
+| `metadata` | 最多 16 对、键 ≤64 / 值 ≤512 字符的字符串字典；超界 400 |
+| `modalities` / `audio` | 请求音频输出时 400（muse 只回文本） |
+| `logprobs` / `top_logprobs` | 400（muse 模型不提供 token logprobs），不伪造概率 |
 | `temperature` / `top_p` / `presence_penalty` 等 | 接受但忽略——muse.ai 不暴露采样控制 |
 | 未知 `model` | 404 `model_not_found`（`param: "model"`）；只接受 `muse-chat` / `muse-image` / `muse-video`，不识别任何第三方模型名 |
 
@@ -76,7 +84,7 @@ OpenAI 错误信封 `{"error": {"message", "type", "param", "code"}}`；每个�
 `x-request-id`、`openai-version: 2020-10-01` 和 `openai-processing-ms`，SDK 的重试日志
 和错误解析与 api.openai.com 拿到的形状一致。
 
-## 文件与音频输入（0.10.0）
+## 文件与音频输入（0.11.0）
 
 chat completions 与 Responses 都接受附件，上传为 muse.ai 的 `file_ref` 附件——
 逆向实测（probe 17）Agent 会真的读取文件内容，并声称可用音频转录工具处理音频：
@@ -95,9 +103,58 @@ resp = client.chat.completions.create(
 ```
 
 音频用 `{"type": "input_audio", "input_audio": {"data": <base64>, "format": "wav"}}`。
-`file_id`（OpenAI 托管文件）不支持——请内联 `file_data`。
 
-## Responses API（0.10.0）
+0.11.0 起支持标准 Files API 流程（0.12.0 补齐 `expires_after`、`purpose` 枚举校验与分页游标）：
+
+```python
+file = client.files.create(file=("notes.txt", open("notes.txt", "rb")),
+                           purpose="assistants")
+client.chat.completions.create(model="muse-chat", messages=[{
+    "role": "user",
+    "content": [{"type": "file", "file": {"file_id": file.id}}]}])
+```
+
+`file_id` 在提示词构建前展开为内联 data URL；`POST/GET/DELETE /v1/files`、`/v1/files/{id}/content`
+均可用，文件默认保留 30 天（`expires_after` 可指定 1 小时到 30 天的过期时间）。
+
+## Stored Chat Completions（0.12.0）
+
+`store: true` 的补全与 OpenAI 一样可以被检索、打标签和删除：
+
+```python
+resp = client.chat.completions.create(
+    model="muse-chat", store=True,
+    messages=[{"role": "user", "content": "记住暗号 XYZZY"}],
+    metadata={"trace": "demo"})
+
+client.chat.completions.retrieve(resp.id)                  # 完整 ChatCompletion
+client.chat.completions.messages.list(resp.id)             # 输入消息（含 content_parts）
+client.chat.completions.list(metadata={"trace": "demo"}, order="desc", limit=20)
+client.chat.completions.update(resp.id, metadata={"trace": "renamed"})
+client.chat.completions.delete(resp.id)
+```
+
+`GET /v1/chat/completions` 支持 `model`、`metadata[key]`、`after`、`limit`（1–100，默认 20）、
+`order`（`asc` 默认）；列表响应带 `first_id` / `last_id` / `has_more`。默认不存储，只有显式
+`store: true` 才写入 `data/chat_completions.json`（TTL `MUSE2API_CHAT_STORE_TTL`，默认 30 天）。
+
+## 视频（Sora 形状，0.12.0）
+
+```python
+video = client.videos.create(
+    model="sora-2", prompt="枫叶在微风中飘落", seconds="4", size="1280x720")
+client.videos.retrieve(video.id)          # status: queued/in_progress/completed/failed
+content = client.videos.download_content(video.id)   # GET /v1/videos/{id}/content
+client.videos.list(limit=20, order="desc", after=...)
+client.videos.remix(video.id, prompt="换成夜景")
+client.videos.delete(video.id)
+```
+
+`POST /v1/videos` 同时接受 JSON 与 multipart；`image` / `input_reference` 可以是 data URL、
+http(s) URL、base64、`file_id` 或上传文件。`edits` / `extensions` / `characters` 返回 501
+（上游只提供生成与重制）。
+
+## Responses API（0.12.0）
 
 `/v1/responses` 不再只是转发：
 
@@ -106,10 +163,26 @@ resp = client.chat.completions.create(
   未知 id 返回 404（`param: "previous_response_id"`）。
 - **函数调用**：请求带 `tools`/`tool_choice` 时走与 chat completions 相同的规划器，
   输出标准 `function_call` 项；`function_call` / `function_call_output` 可作为输入项回传续接；
-  流式有 `response.function_call_arguments.delta/done` 事件。
-- **完整事件序**：`output_text.done` / `content_part.done` 补齐，`max_output_tokens`
-  触发 `status: "incomplete"` + `response.incomplete` 事件。
-- `instructions` 走与 chat completions 相同的 system 注入链（托管规则 + 指令块）。
+  流式有 `response.function_call_arguments.delta/done` 事件。Chat 的嵌套 `function` 形状和
+  Responses 的顶层 `name` 形状都接受。
+- **完整事件序**：`response.created` / `response.in_progress` / `output_text.done` /
+  `content_part.done` 补齐，`max_output_tokens` 触发 `status: "incomplete"` +
+  `response.incomplete` 事件；流式错误使用 Responses 的 `{"type": "error"}` 事件。
+- **完整对象面**：`GET`/`DELETE /v1/responses/{id}`、`/{id}/input_items`（分页，默认 `desc`）、
+  `/input_tokens`（只计数）、`/{id}/cancel`（仅进行中的请求）。创建后立即落盘为
+  `in_progress`，进行中可检索；取消后持久化为 `cancelled`。
+- **当前字段**：`completed_at`、`service_tier`、`access_programs`、`background`、
+  `conversation`、`max_tool_calls`、`top_logprobs`、`safety_identifier`、`prompt_cache_key`、
+  `usage.input_tokens_details.cache_write_tokens`、`output[*].content[*].logprobs`。
+- **网页检索**：`tools: [{"type": "web_search"}]` 驱动 muse.ai 原生搜索，输出
+  `output_text.annotations` 里的 `url_citation`，流式发
+  `response.output_text.annotation.added`。
+- `instructions` 支持字符串或 text item 列表，走与 chat completions 相同的 system 注入链；
+  `previous_response_id` 续聊时上一轮的 instructions **永远不继承**（OpenAI 语义）。
+- `metadata`（16 对 / 64 / 512 字符边界）/ `user` / `parallel_tool_calls` / `tool_choice` /
+  `reasoning` / `truncation` 会回显在响应对象里。
+- 不可表达的参数明确 400：`background`（上游轮次绑定 WebSocket，没有可恢复队列）、
+  `conversation`、`top_logprobs`、非 `auto`/`default` 的 `service_tier`。
 
 ## 浏览器直连
 

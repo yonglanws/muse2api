@@ -54,6 +54,12 @@ def _task_view(task: Task) -> dict:
 async def _generate(body: ImageGenerationRequest, refs: list[InputImage],
                     request: Request, svc: Services) -> dict:
     request.state.model = resolve_model(body.model, "image").id  # actual model
+    if body.stream:
+        # OpenAI streams partial images for gpt-image-1; muse.ai paints the
+        # whole image in one agent reply, so there are no partial frames.
+        raise InvalidRequest(
+            "streaming image generation is not supported; set stream=false",
+            param="stream")
     if len(refs) > MAX_REFERENCE_IMAGES:
         raise InvalidRequest(f"at most {MAX_REFERENCE_IMAGES} reference images are supported")
     if body.async_:
@@ -90,8 +96,21 @@ async def _run(body: ImageGenerationRequest, refs: list[InputImage], base: str,
         # After the gateway call, so the account is not held during matting.
         results = [replace(r, data=await svc.matting.remove(r.data), mime="image/png")
                    for r in results]
-    return {"created": int(time.time()),
-            "data": [_image_item(r, body.response_format, svc, base) for r in results]}
+    output_format = None
+    if results:
+        mime = results[0].mime or ""
+        if mime in ("image/png", "image/jpeg", "image/webp"):
+            output_format = mime.split("/", 1)[1]
+    response = {"created": int(time.time()),
+                "data": [_image_item(r, body.response_format, svc, base) for r in results],
+                "background": "transparent" if transparent else "opaque"}
+    if output_format:
+        response["output_format"] = output_format
+    if body.size:
+        response["size"] = body.size
+    if body.quality:
+        response["quality"] = body.quality
+    return response
 
 
 @router.post("/v1/images/generations")
@@ -102,13 +121,10 @@ async def generate_images(body: ImageGenerationRequest, request: Request,
     return await _generate(body, loaded, request, svc)
 
 
-@router.post("/v1/images/edits")
-async def edit_images(request: Request, svc: Services = Depends(get_services)) -> dict:
-    """OpenAI-style multipart edit: ``image`` / ``image[]`` files plus a prompt.
-
-    muse.ai has no inpainting, so the images act as references for a new image
-    and ``mask`` is rejected rather than silently ignored.
-    """
+async def _multipart_request(request: Request, *,
+                             default_prompt: str | None = None
+                             ) -> tuple[ImageGenerationRequest, list[InputImage]]:
+    """Parse the shared ``image``/``image[]`` + fields multipart shape."""
     form = await request.form()
     if form.get("mask") is not None:
         raise InvalidRequest("mask is not supported; muse.ai cannot inpaint a region")
@@ -117,6 +133,8 @@ async def edit_images(request: Request, svc: Services = Depends(get_services)) -
     if not files:
         raise InvalidRequest("at least one image file is required (field 'image' or 'image[]')")
     fields = {k: v for k, v in form.items() if isinstance(v, str) and k not in ("image", "image[]")}
+    if default_prompt and not fields.get("prompt"):
+        fields["prompt"] = default_prompt
     try:
         body = ImageGenerationRequest(**fields)
     except ValidationError as exc:
@@ -127,6 +145,26 @@ async def edit_images(request: Request, svc: Services = Depends(get_services)) -
         if not mime.startswith("image/"):
             mime = mimetypes.guess_type(f.filename or "")[0] or "image/png"
         refs.append(InputImage(data=await f.read(), mime=mime))
+    return body, refs
+
+
+@router.post("/v1/images/edits")
+async def edit_images(request: Request, svc: Services = Depends(get_services)) -> dict:
+    """OpenAI-style multipart edit: ``image`` / ``image[]`` files plus a prompt.
+
+    muse.ai has no inpainting, so the images act as references for a new image
+    and ``mask`` is rejected rather than silently ignored.
+    """
+    body, refs = await _multipart_request(request)
+    return await _generate(body, refs, request, svc)
+
+
+@router.post("/v1/images/variations")
+async def create_variation(request: Request, svc: Services = Depends(get_services)) -> dict:
+    """OpenAI image variations, expressed as a reference-image generation."""
+    body, refs = await _multipart_request(request, default_prompt=(
+        "Create a new variation of the uploaded image, preserving its subject "
+        "and style while changing the details."))
     return await _generate(body, refs, request, svc)
 
 

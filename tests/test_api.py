@@ -199,11 +199,16 @@ def test_video_task(client, auth):
     task_id = r.json()["id"]
     for _ in range(50):
         task = client.get(f"/v1/videos/{task_id}", headers=auth).json()
-        if task["status"] in ("succeeded", "failed"):
+        if task["status"] in ("completed", "failed"):
             break
         time.sleep(0.02)
-    assert task["status"] == "succeeded", task
+    assert task["status"] == "completed", task
+    assert task["object"] == "video"
+    assert task["seconds"] == "5"
     assert task["result"]["url"].endswith(".mp4")
+    content = client.get(f"/v1/videos/{task_id}/content", headers=auth)
+    assert content.status_code == 200
+    assert content.headers["content-type"] == "video/mp4"
 
 
 def _capture_chat_requests(client, monkeypatch) -> list:
@@ -358,7 +363,7 @@ def test_image_edits_rejects_bad_input(client, auth):
     mask = client.post("/v1/images/edits", headers=auth, data={"prompt": "x"},
                        files=[png, ("mask", ("m.png", b"mask", "image/png"))])
     assert mask.status_code == 400
-    bad_n = client.post("/v1/images/edits", headers=auth, data={"prompt": "x", "n": "9"},
+    bad_n = client.post("/v1/images/edits", headers=auth, data={"prompt": "x", "n": "11"},
                         files=[png])
     assert bad_n.status_code == 400
 

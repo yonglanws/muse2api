@@ -87,6 +87,7 @@ class FakeClient:
         self.registrations: list[dict] = []
         self.invoke_replies: list[tuple[str, bool, dict]] = []
         self.pending_invoke: dict | None = None
+        self.downloaded: list[str] = []
 
     async def chat_stream(self, session_id: str, items: list[dict], *,
                           node_id: str | None = None, hidden_prompt: str | None = None,
@@ -102,16 +103,31 @@ class FakeClient:
                 "message_id": message_id, "text": f"reply:{text}",
                 "session_id": session_id}},
         ]
+        if "[[media]]" in text:
+            path = "sandbox://workspace/imagine_media/out.png"
+            events.append({"event": "delta.presentation", "seq": base + 3, "payload": {
+                "kind": "image", "image_path": path,
+                "data": {"images": [{"path": path, "label": "out",
+                                     "mime": "image/png"}]}}})
         if self.pending_invoke is not None:
             invoke = dict(self.pending_invoke)
             invoke["seq"] = base + 3
             events.append(invoke)
-        events.append({"event": "delta.message_done", "seq": base + 4, "payload": {
+        done = {"event": "delta.message_done", "seq": base + 4, "payload": {
             "chat_context": {"device_id": node_id}, "status": "completed",
             "transcript": {"messages": [{"content": [
-                {"type": "text", "text": f"reply:{text}"}]}]}}})
+                {"type": "text", "text": f"reply:{text}"}]}]}}}
+        if "[[media]]" in text:
+            done["payload"]["resources"] = [{
+                "kind": "citation", "uri": "https://example.com/a",
+                "label": "Example A", "metadata": "{\"domain\":\"example.com\"}"}]
+        events.append(done)
         self._events.extend(events)
         return {"session_id": session_id, "is_thread": True, "message_id": message_id}
+
+    async def download_bytes(self, resource: dict) -> bytes:
+        self.downloaded.append(str(resource.get("path") or ""))
+        return b"\x89PNG\r\n\x1a\nfake"
 
     async def subscribe(self, session_id: str, *, after_stream_seq: int = 0, **kwargs) -> FakeSub:
         self.sub_calls.append((session_id, after_stream_seq))
@@ -190,11 +206,71 @@ async def test_protocol_image_item_uses_base64():
     assert base64.b64decode(item["data_base64"]).startswith(b"\x89PNG")
 
 
+async def test_protocol_chat_surfaces_generated_media_and_citations():
+    driver, client = _driver_with_fake()
+    account = Account(id="acc_test")
+    req = _chat("draw [[media]]", [("user", "draw [[media]]")])
+    _ = [delta async for delta in driver.chat_stream(account, req)]
+    assert [m.kind for m in req.media] == ["image"]
+    assert req.media[0].mime == "image/png"
+    assert req.media[0].label == "out"
+    assert client.downloaded == ["sandbox://workspace/imagine_media/out.png"]
+    assert [(c.url, c.title) for c in req.citations] == [
+        ("https://example.com/a", "Example A")]
+
+
 async def test_protocol_health_is_ready():
     driver = ProtocolDriver(Settings())
     health = await driver.health()
     assert health["ok"] is True
     assert health["driver"] == "protocol"
+
+
+def test_noise_handshake_error_retry_classification():
+    from muse2api.drivers.protocol.client import _NoiseHandshakeError
+
+    assert _NoiseHandshakeError("502", status=502).retryable is True
+    assert _NoiseHandshakeError(
+        "502", marker="fail_ip_registry_not_found").retryable is True
+    assert _NoiseHandshakeError("403", status=403).retryable is False
+
+
+async def test_connect_wakes_vm_when_noise_endpoint_is_unregistered(monkeypatch):
+    """Session says RUNNING but the Noise FQDN is missing from Meta's registry
+    (502). The client must wake the VM and retry the handshake."""
+    from muse2api.drivers.protocol import client as client_module
+
+    session = {"status": "assigned", "endpoint_url": "wss://vm.example/",
+               "vm_state": "RUNNING", "vm_id": "vm-1", "vm_type": "hatch_vm"}
+    client = client_module.MuseProtocolClient({})
+    woke: list[int] = []
+    attempts: list[int] = []
+
+    async def fake_http(method, url, body=None, timeout=30.0):
+        return dict(session)
+
+    async def fake_wake(sess, *, confirm=20.0):
+        woke.append(1)
+        return dict(session)
+
+    async def fake_handshake(sess, vm_type):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise client_module._NoiseHandshakeError(
+                "HTTP 502", status=502, marker="fail_ip_registry_not_found")
+
+    async def noop():
+        return
+
+    monkeypatch.setattr(client, "_http_json", fake_http)
+    monkeypatch.setattr(client, "_wake", fake_wake)
+    monkeypatch.setattr(client, "_noise_handshake", fake_handshake)
+    monkeypatch.setattr(client, "_receiver", noop)
+    monkeypatch.setattr(client, "_heartbeat", noop)
+    await client.connect(wake_confirm=0)
+    assert len(attempts) == 2
+    assert woke == [1]
+    await client.close()
 
 
 # ------------------------------------------------------------ native tools

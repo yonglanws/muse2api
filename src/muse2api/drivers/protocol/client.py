@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import mimetypes
@@ -23,6 +24,7 @@ from urllib.parse import urlencode
 
 import httpx
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import InvalidStatus
 
 from ...errors import (
     UpstreamAuthError,
@@ -64,6 +66,24 @@ class Response:
 
     def json(self) -> Any:
         return json.loads(bytes(self.body)) if self.body else {}
+
+
+class _NoiseHandshakeError(UpstreamError):
+    """One Noise handshake attempt failed; ``connect`` may wake and retry."""
+
+    def __init__(self, detail: str, *, status: int | None = None,
+                 marker: str = "") -> None:
+        super().__init__(f"Noise WebSocket connection failed ({detail})")
+        self.status = status
+        self.marker = marker
+        # Auth rejections cannot be fixed by waking; everything else (timeouts,
+        # 5xx, and the IP-registry 502) can.
+        self.retryable = (
+            status is None
+            or status in (404, 408, 425, 429)
+            or status >= 500
+            or "registry" in marker
+        )
 
 
 class Subscription:
@@ -230,55 +250,48 @@ class MuseProtocolClient:
             raise UpstreamError("Muse returned an invalid bootstrap response")
         return value
 
-    async def connect(self, *, wake_confirm: float = 20.0) -> None:
-        if self.alive:
-            return
-        self.closing = False
-        self._mark("session_start")
-        session = await self._http_json("GET", f"{SESSION_API}?vm_state=live")
-        self._mark("session")
-        if not self._usable(session):
-            if not session.get("vm_id"):
-                raise UpstreamError("Muse workspace is not assigned")
-            try:
-                self._mark("wake_start")
-                await self._http_json("POST", WAKE_API, {
-                    "vm_id": session["vm_id"], "retry_count": 0,
-                    "connect_attempt_id": str(uuid.uuid4()),
-                })
-                self._mark("wake")
-            except UpstreamError:
-                pass
-            deadline = time.monotonic() + max(1.0, wake_confirm)
-            while time.monotonic() < deadline:
-                await asyncio.sleep(2.0)
-                session = await self._http_json("GET", f"{SESSION_API}?vm_state=live")
-                self._mark("session")
-                if self._usable(session):
-                    break
-        if not self._usable(session):
-            state = str(session.get("vm_state") or "unknown")
-            raise UpstreamError(f"Muse workspace is not RUNNING (state={state})")
-        self.session = session
-        vm_type = str(session.get("vm_type") or "").lower()
-        cvm = session.get("cvm_eligibility") or session.get("cvmEligibility") or {}
-        if isinstance(cvm, dict):
-            state = str(cvm.get("state") or cvm.get("status") or "").upper()
-            inactive = ("", "NOT_ELIGIBLE", "INELIGIBLE", "NONE", "DISABLED", "N/A")
-            if state not in inactive and (
-                    "ELIGIB" in state or state in ("REQUIRED", "ENROLLED", "ENABLED")):
-                raise UpstreamError(
-                    f"unsupported confidential VM state={state}; protocol driver "
-                    "supports standard hatch_vm only")
-        if "confidential" in vm_type:
-            raise UpstreamError(
-                f"unsupported VM type {vm_type}; protocol driver supports "
-                "standard hatch_vm only")
+    async def _wake(self, session: dict[str, Any], *, confirm: float = 20.0) -> dict[str, Any]:
+        """Ask the VM to wake and wait until /api/session is usable again.
+
+        muse.ai can report ``vm_state: RUNNING`` while the VM's Noise FQDN is
+        missing from Meta's IP registry (the edge answers 502
+        ``fail_ip_registry_not_found``). A wake call re-registers the endpoint;
+        without it every reconnect fails forever even though the session looks
+        healthy (observed 2026-11-16).
+        """
+        if not session.get("vm_id"):
+            return session
+        try:
+            self._mark("wake_start")
+            log.info("waking Muse VM %s (noise/registry recovery)", session["vm_id"])
+            await self._http_json("POST", WAKE_API, {
+                "vm_id": session["vm_id"], "retry_count": 0,
+                "connect_attempt_id": str(uuid.uuid4()),
+            })
+            self._mark("wake")
+        except UpstreamError:
+            return session
+        deadline = time.monotonic() + max(0.0, confirm)
+        while True:
+            await asyncio.sleep(2.0)
+            session = await self._http_json("GET", f"{SESSION_API}?vm_state=live")
+            self._mark("session")
+            if self._usable(session) or time.monotonic() >= deadline:
+                return session
+
+    async def _noise_handshake(self, session: dict[str, Any], vm_type: str) -> None:
         self._mark("token_start")
-        token = await self._http_json("POST", TOKEN_API, {
-            "vmAddress": session.get("endpoint_url"),
-            **({"vmName": session["vm_name"]} if session.get("vm_name") else {}),
-        })
+        try:
+            token = await self._http_json("POST", TOKEN_API, {
+                "vmAddress": session.get("endpoint_url"),
+                **({"vmName": session["vm_name"]} if session.get("vm_name") else {}),
+            })
+        except (UpstreamAuthError, UpstreamQuotaError):
+            raise
+        except UpstreamError as exc:
+            # A 5xx from the bootstrap API is often the same VM-registry
+            # problem; wake + retry instead of failing the request.
+            raise _NoiseHandshakeError(str(exc)) from None
         auth_token = token.get("token")
         if not auth_token:
             raise UpstreamError("Muse hatch/token returned no token")
@@ -324,13 +337,72 @@ class MuseProtocolClient:
             await self.ws.send(noise.msg3())
             self.send_cipher, self.recv_cipher = noise.split()
             self._mark("noise")
+        except InvalidStatus as exc:
+            status = getattr(exc.response, "status_code", None)
+            marker = ""
+            with contextlib.suppress(Exception):
+                marker = exc.response.headers.get("x-hatch-resolution-status") or ""
+            await self._close_ws()
+            raise _NoiseHandshakeError(
+                f"HTTP {status}" + (f" ({marker})" if marker else ""),
+                status=status, marker=marker) from None
         except UpstreamError:
+            if self.ws is not None:
+                await self._close_ws()
             raise
         except Exception as exc:
             if self.ws is not None:
                 await self._close_ws()
+            raise _NoiseHandshakeError(type(exc).__name__) from None
+
+    async def connect(self, *, wake_confirm: float = 20.0) -> None:
+        if self.alive:
+            return
+        self.closing = False
+        self._mark("session_start")
+        session = await self._http_json("GET", f"{SESSION_API}?vm_state=live")
+        self._mark("session")
+        if not self._usable(session):
+            if not session.get("vm_id"):
+                raise UpstreamError("Muse workspace is not assigned")
+            session = await self._wake(session, confirm=wake_confirm)
+        if not self._usable(session):
+            state = str(session.get("vm_state") or "unknown")
+            raise UpstreamError(f"Muse workspace is not RUNNING (state={state})")
+        self.session = session
+        vm_type = str(session.get("vm_type") or "").lower()
+        cvm = session.get("cvm_eligibility") or session.get("cvmEligibility") or {}
+        if isinstance(cvm, dict):
+            state = str(cvm.get("state") or cvm.get("status") or "").upper()
+            inactive = ("", "NOT_ELIGIBLE", "INELIGIBLE", "NONE", "DISABLED", "N/A")
+            if state not in inactive and (
+                    "ELIGIB" in state or state in ("REQUIRED", "ENROLLED", "ENABLED")):
+                raise UpstreamError(
+                    f"unsupported confidential VM state={state}; protocol driver "
+                    "supports standard hatch_vm only")
+        if "confidential" in vm_type:
             raise UpstreamError(
-                f"Noise WebSocket connection failed ({type(exc).__name__})") from None
+                f"unsupported VM type {vm_type}; protocol driver supports "
+                "standard hatch_vm only")
+
+        retries = 2
+        while True:
+            try:
+                await self._noise_handshake(session, vm_type)
+                break
+            except _NoiseHandshakeError as exc:
+                if retries <= 0 or not exc.retryable:
+                    raise UpstreamError(
+                        f"Noise WebSocket connection failed ({exc})") from None
+                retries -= 1
+                log.warning("noise handshake failed (%s); waking VM and retrying",
+                            exc)
+                session = await self._wake(session, confirm=min(wake_confirm, 10.0))
+                self.session = session
+                if not self._usable(session):
+                    raise UpstreamError(
+                        "Noise WebSocket connection failed; VM did not become ready"
+                    ) from None
         self._receiver_task = asyncio.create_task(self._receiver())
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
 
