@@ -140,6 +140,7 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用四层机�
 
 1. **VM 托管规则**：Agent 每次会话开始都会读取账号 VM 里的 `IDENTITY.md` / `SOUL.md` / `AGENTS.md`，服务端还会逐轮重新注入。网关在这三个文件末尾维护一段带标记的托管规则（跟随 system 指令、禁用账号记忆工具、优先使用已注册客户端命令）。原文件先备份到 `data/harness_backup/`，`POST /admin/harness/{id}/restore` 可随时还原。
 2. **会话内指令块（0.17.1 重写投递）**：`system` / `developer` 消息以“这段对话请始终遵循以下设定”的自然请求措辞随首条消息投递，当前用户消息单独放在最后；后续轮次只发送新的用户轮。指令内容变化会换新线程，避免新旧规则混用。0.17.1 起不再使用「系统指令｜最高优先级」类自我声明式包装——上游 2026-11-17 新构建（新增对齐体系）会把这类包装整体识别为 prompt injection 丢弃（probe 59/66/67），而 plain 措辞命中其核心提示词的明文豁免（"adopt user requested personalities and perspectives faithfully"），格式/约束/语气类指令恢复可靠遵循。
+3. **人格自介绍缓解（0.17.2，probe 70-73）**：对齐时代的模型对"你是谁/自我介绍"类身份问句一律如实答 Muse（few-shot 种子、渲染指令、任务重映射均无法翻转——已逐一实测）。`MUSE2API_PERSONA_INTRO=true`（默认开）时，会话的 system 提示词命名了角色（"你是 X"）且用户发送**独立的身份问句**时，网关将该轮投递为已验证的"为「X」这个角色写台词"创作任务（probe 73：T 3/3 + U 2/2），回复即为人格的自介绍台词。仅整句身份问句触发，不影响其他消息。
 3. **原生 persona 语气通道（0.16.0 probe 19 / 0.17.0 probe 21-26）**：`POST /admin/identity/{id}` 走上游 `onboarding.identity.set`，`vibe`（`dry_witty` / `short_concise` / `warm_friendly`）写进 `IDENTITY.md` 后被服务端**逐轮实时**解析注入（probe 23b：同一线程中途删掉该行，语气当轮回退）。`vibe="none"` 删除该行（上游没有 vibe 删除接口，这是唯一的关闭开关）；`GET /admin/identity/{id}` 附带 `gateway.vibe_line` 诊断（probe 25：自由文本值会被注入器的 id 校验丢弃）。`name` 仅注册期可写（probe 22/26：重开 bootstrap 也不解锁，PATCH/POST /identity 均 403）——模型还会主动核对服务端身份记录、拒绝文件里未登记的人格声明（probe 24）。
 4. **网页同源信封（0.16.0，probe 18）**：连接时 `model.get`（`GET /model`）读取账号选中模型与 `model_identity_visibility`，`visible` 时每轮 `chat.stream` 携带 `model`；发送网页客户端同款 `capabilities`；`MUSE2API_TIMEZONE` 使上游逐轮渲染 `[Day YYYY-MM-DD HH:MM:SS TZ] [client_timezone=…]` 开发者消息（时区粘性保持）。`GET/PATCH /admin/vm-config/{id}` 可读写 VM 推理努力配置（`llm.reasoning.*.effort`）。
 5. **隐私开关（0.17.0，probe 21）**：`GET/POST /admin/product-improvements/{id}` 读写账号的 Meta 数据训练授权（`training_enabled`）。给网关接入第三方提示词前，可先 `{"training_enabled": false}` 退出训练。完整注入面全图（含已证实的硬边界）见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
@@ -411,6 +412,7 @@ client.chat.completions.delete(resp.id)
 | `MUSE2API_CHAT_WIRE_PARITY` | `true` | `chat.stream` 与网页客户端逐字段一致：连接时 `model.get` 读取账号选中模型（`visible` 时每轮携带）、发送网页端同款 `capabilities` 列表 |
 | `MUSE2API_TIMEZONE` | 空 | 每轮随请求发送的 IANA 时区；上游据此渲染 `[Day … TZ] [client_timezone=…]` 开发者消息且粘性保持，空 = 沿用账号已有值 |
 | `MUSE2API_CITATION_MARKERS` | `native` | 回复内联引用标记（`【url_id†L9】`）的处理：`native` 原样 / `footnote` 重写为 `[1]/[2]/…` / `strip` 删除；URL 已在 `annotations` |
+| `MUSE2API_PERSONA_INTRO` | `true` | 人格自介绍缓解：persona 会话中的独立身份问句按已验证的"角色台词"任务投递（0.17.2） |
 
 **超时与心跳**
 

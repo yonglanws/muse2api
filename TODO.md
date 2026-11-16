@@ -114,6 +114,7 @@
 | 0.16.0 | 网页同源信封（model.get/model+timezone+capabilities）；原生 vibe 通道与引用标记归一化；VM 推理配置端点 |
 | 0.17.0 | 身份注入面全图（probe 21-27：逐轮实时注入/身份护栏/name 仅注册期）；vibe 清除与诊断；product-improvements 隐私开关 |
 | 0.17.1 | 应对上游对齐体系（00:30 build）：指令投递去包装化（probe 59-68 破案），harness 措辞重构，格式/约束指令恢复可靠遵循 |
+| 0.17.2 | 人格自介绍缓解（probe 70-73：身份问句台词化投递，T 3/3）；MUSE2API_PERSONA_INTRO 开关 |
 
 详细记录：
 

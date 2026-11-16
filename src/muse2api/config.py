@@ -204,6 +204,17 @@ class Settings(BaseSettings):
         "URLs already travel as annotations). native keeps them, footnote rewrites "
         "each distinct marker as [1]/[2]/…, strip removes them.",
     )
+    persona_intro: bool = Field(
+        default=True,
+        description="Persona self-introduction mitigation (probe 73: upstream's "
+        "alignment-era model answers identity questions as Muse no matter how "
+        "the session config is phrased, but reliably renders first-person "
+        "character dialogue for a named-character writing task). When on, a "
+        "standalone identity question (你是谁/自我介绍/who are you …) inside a "
+        "session whose system prompt names a character is delivered upstream as "
+        "a writing task for that character, so the reply comes back as the "
+        "persona's own introduction.",
+    )
 
     # --- account pool ---
     pool_strategy: PoolStrategyName = "affinity"

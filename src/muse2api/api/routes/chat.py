@@ -312,7 +312,9 @@ def _build_plan(body: ChatCompletionRequest, messages: list[dict], settings) -> 
 
     system = system_prompt.extract_system_prompt(messages)
     if system:
-        plan = system_prompt.build_prompt(messages, max_prompt_chars=settings.max_prompt_chars)
+        plan = system_prompt.build_prompt(
+            messages, max_prompt_chars=settings.max_prompt_chars,
+            persona_intro=settings.persona_intro)
         return _Plan(
             prompt=plan.prompt,
             followup_prompt=plan.followup_prompt,
@@ -481,9 +483,11 @@ def _retry_request(plan: _Plan, req: ChatRequest, messages: list[dict],
 
 
 def _json_retry_request(plan: _Plan, req: ChatRequest, messages: list[dict],
-                        max_prompt_chars: int = 18000) -> ChatRequest:
+                        max_prompt_chars: int = 18000,
+                        persona_intro: bool = True) -> ChatRequest:
     """A fresh-thread retry that restates the JSON-only contract."""
-    base = system_prompt.build_prompt(messages, max_prompt_chars=max_prompt_chars)
+    base = system_prompt.build_prompt(
+        messages, max_prompt_chars=max_prompt_chars, persona_intro=persona_intro)
     prompt = (f"{base.prompt}\n\n{plan.json_directive}\n\n"
               "Your previous reply was not valid JSON. This reply MUST be a "
               "single valid JSON value and nothing else.")
@@ -557,7 +561,9 @@ async def _retry_nonstream(text: str, plan: _Plan, req: ChatRequest, svc: Servic
         for _ in range(max(0, svc.settings.tool_retries)):
             if not _needs_json_retry(text):
                 return _extract_json(text) or text
-            attempt = _json_retry_request(plan, req, messages, svc.settings.max_prompt_chars)
+            attempt = _json_retry_request(plan, req, messages,
+                                          svc.settings.max_prompt_chars,
+                                          svc.settings.persona_intro)
             text = await _collect(svc.gateway.chat_stream(attempt))
         value = _extract_json(text)
         return value if value is not None else text
@@ -1003,7 +1009,8 @@ async def chat_completions(body: ChatCompletionRequest, request: Request,
                     if not _needs_json_retry(produced):
                         break
                     attempt = _json_retry_request(
-                        plan, req, messages, svc.settings.max_prompt_chars)
+                        plan, req, messages, svc.settings.max_prompt_chars,
+                        svc.settings.persona_intro)
                     holder = []
                     async for piece in _pump_stream(
                             svc.gateway.chat_stream(attempt), interval, holder):

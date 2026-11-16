@@ -28,6 +28,37 @@ from .tool_plan import tool_rules, tool_specs
 _SYSTEM_ROLES = {"system", "developer"}
 _ROLE_LABELS = {"user": "用户", "assistant": "助手", "tool": "工具结果"}
 
+# 0.17.2 persona self-introduction mitigation (probe 73).  Upstream's
+# alignment-era model answers identity questions as Muse no matter how the
+# session config is delivered (probes 59/66/67/70-72: even few-shot seeds and
+# render directives are overridden by the core identity layer), but it
+# reliably renders first-person character dialogue for a named-character
+# writing task ("请写一段「X」这个角色的自我介绍（你在为这个角色写台词…）" 3/3).
+IDENTITY_INTENT_RE = re.compile(
+    r"^\s*(?:你是谁|你叫什么(?:名字)?|你的名字是什么|自我介绍(?:一下)?"
+    r"|介绍一下你自己|介绍一下自己|你是干什么的"
+    r"|who\s+are\s+you|what(?:'s| is) your name|introduce yourself)\s*[?？。!！]?\s*$",
+    re.IGNORECASE,
+)
+PERSONA_NAME_RE = re.compile(
+    r"你(?:是|叫|的名字是|扮演)\s*[「『\"'『]?([\w\-·A-Za-z\u4e00-\u9fff]{1,24})"
+    r"[」』\"'『]?(?:[，,。！!]|$)"
+)
+
+
+def persona_name_from(system_prompt: str) -> str | None:
+    """Extract the configured character name from a persona system prompt."""
+    match = PERSONA_NAME_RE.search(system_prompt or "")
+    if not match:
+        return None
+    name = match.group(1).strip("「」\"'『』 　")
+    return name or None
+
+
+def persona_intro_task(name: str) -> str:
+    """The verified writing-task shape (probe 73 T/U: 3/3 + 2/2)."""
+    return f"请写一段「{name}」这个角色的自我介绍（你在为这个角色写台词，一句话）。"
+
 
 @dataclass
 class PromptPlan:
@@ -42,6 +73,7 @@ class PromptPlan:
     system_fingerprint: str | None = None
     tool_continuation: bool = False
     images_current_only: bool = True
+    persona_intro_applied: bool = False
 
 
 def content_to_text(content: Any) -> str:
@@ -229,12 +261,24 @@ def build_prompt(
     messages: list[dict[str, Any]],
     *,
     max_prompt_chars: int = 18000,
+    persona_intro: bool = True,
 ) -> PromptPlan:
     """Build a full prompt and a compact follow-up prompt."""
     system_prompt, history, current_msg, tool_cont, turns = _split_request(messages)
     current_text, images = _current_text(current_msg, tool_cont=tool_cont)
     earlier_images = history_images(history)
     images = earlier_images + images
+
+    # 0.17.2: persona self-introduction mitigation — when a persona-configured
+    # session gets a standalone identity question, deliver it upstream as the
+    # verified named-character writing task so the reply comes back as the
+    # persona's own introduction instead of a Muse identity answer.
+    intro_applied = False
+    if persona_intro and system_prompt and not tool_cont:
+        name = persona_name_from(system_prompt)
+        if name and IDENTITY_INTENT_RE.match(current_text or ""):
+            current_text = persona_intro_task(name)
+            intro_applied = True
 
     sections: list[str] = []
     system = _system_block(system_prompt, max_prompt_chars)
@@ -271,6 +315,7 @@ def build_prompt(
         current_user_text=current_text,
         system_fingerprint=_fingerprint(system_prompt),
         tool_continuation=tool_cont,
+        persona_intro_applied=intro_applied,
     )
 
 
