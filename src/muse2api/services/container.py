@@ -18,6 +18,7 @@ from .gateway import Gateway
 from .request_log import RequestLog, current_record
 from .response_store import ResponseStore
 from .tasks import Task, TaskManager
+from .upload_store import UploadStore
 
 
 @dataclass
@@ -31,6 +32,7 @@ class Services:
     completions: ChatCompletionStore
     media: MediaStore
     files: FileStore
+    uploads: UploadStore
     matting: Matting
     keys: KeyStore
     requests: RequestLog
@@ -54,6 +56,9 @@ class Services:
                                        (task.error or {}).get("message"),
                                        record.get("account_id") if record else None)
 
+        files = FileStore(settings.files_dir, settings.files_file,
+                          max_bytes=settings.file_max_bytes,
+                          ttl_seconds=settings.files_retention_days * 86400)
         return cls(
             settings=settings,
             driver=driver,
@@ -64,9 +69,8 @@ class Services:
             completions=ChatCompletionStore(settings.chat_completions_file,
                                             ttl_seconds=settings.chat_store_ttl),
             media=MediaStore(settings.media_dir),
-            files=FileStore(settings.files_dir, settings.files_file,
-                            max_bytes=settings.file_max_bytes,
-                            ttl_seconds=settings.files_retention_days * 86400),
+            files=files,
+            uploads=UploadStore(settings.uploads_dir, settings.uploads_file, files),
             matting=Matting(settings.matting_model),
             keys=KeyStore(settings.keys_file),
             requests=requests,

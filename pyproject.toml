@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muse2api"
-version = "0.12.2"
+version = "0.13.0"
 description = "muse.ai 网页版的反向代理网关：OpenAI 兼容 API、系统提示词与工具调用"
 readme = "README.md"
 license = { text = "MIT" }
@@ -22,6 +22,7 @@ dependencies = [
     "python-socks[asyncio]>=2.6",
     "python-multipart>=0.0.9",
     "tiktoken>=0.8",
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]

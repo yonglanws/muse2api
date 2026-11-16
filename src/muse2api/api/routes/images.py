@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
+from ...core.image_codec import format_from_mime, transcode_image
 from ...core.media import load_image_ref
 from ...core.models import resolve_model
 from ...drivers.base import ImageRequest, InputImage, MediaResult
@@ -63,6 +64,10 @@ async def _generate(body: ImageGenerationRequest, refs: list[InputImage],
             param="stream")
     if len(refs) > MAX_REFERENCE_IMAGES:
         raise InvalidRequest(f"at most {MAX_REFERENCE_IMAGES} reference images are supported")
+    if body.background == "transparent" and body.output_format == "jpeg":
+        raise InvalidRequest(
+            "transparent backgrounds require output_format 'png' or 'webp'",
+            param="output_format")
     if body.async_:
         return _submit(body, refs, request, svc)
     return await _run(body, refs, public_base(request), svc)
@@ -98,11 +103,26 @@ async def _run(body: ImageGenerationRequest, refs: list[InputImage], base: str,
         # After the gateway call, so the account is not held during matting.
         results = [replace(r, data=await svc.matting.remove(r.data), mime="image/png")
                    for r in results]
+    converted: list[MediaResult] = []
+    for result in results:
+        source = format_from_mime(result.mime)
+        target = body.output_format
+        recompress = (body.output_compression is not None
+                      and (target or source) in ("jpeg", "webp"))
+        if target and (target != source or recompress):
+            data, mime = transcode_image(
+                result.data, target,
+                body.output_compression if target in ("jpeg", "webp") else None)
+            result = replace(result, data=data, mime=mime)
+        elif not target and recompress and source:
+            data, mime = transcode_image(
+                result.data, source, body.output_compression)
+            result = replace(result, data=data, mime=mime)
+        converted.append(result)
+    results = converted
     output_format = None
     if results:
-        mime = results[0].mime or ""
-        if mime in ("image/png", "image/jpeg", "image/webp"):
-            output_format = mime.split("/", 1)[1]
+        output_format = format_from_mime(results[0].mime)
     response = {"created": int(time.time()),
                 "data": [_image_item(r, body.response_format, svc, base) for r in results],
                 "background": "transparent" if transparent else "opaque"}

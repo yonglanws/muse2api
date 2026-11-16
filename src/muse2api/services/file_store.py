@@ -25,6 +25,10 @@ from .ownership import visible
 
 log = logging.getLogger(__name__)
 
+FILE_PURPOSES = frozenset({
+    "assistants", "batch", "fine-tune", "vision", "user_data", "evals",
+})
+
 _FILE_ID = re.compile(r"^file-[A-Za-z0-9_-]{1,80}$")
 _SAFE_STORED = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 _MAX_INDEX_ENTRIES = 10000

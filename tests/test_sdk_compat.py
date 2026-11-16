@@ -83,6 +83,40 @@ async def test_sdk_responses_retrieve_stream(client, auth):
         await http_client.aclose()
 
 
+async def test_sdk_uploads_roundtrip(client, auth):
+    """The official SDK's chunked-upload surface must yield a usable file."""
+    token = auth["Authorization"].split(" ", 1)[1]
+    sdk, http_client = _sdk_client(client, token)
+    payload = b"sdk multipart upload body"
+    try:
+        upload = await sdk.uploads.create(
+            bytes=len(payload), filename="sdk.bin",
+            mime_type="application/octet-stream", purpose="assistants")
+        assert upload.object == "upload"
+        assert upload.status == "pending"
+
+        parts = []
+        for chunk in (payload[:6], payload[6:]):
+            parts.append(await sdk.uploads.parts.create(
+                upload.id,
+                data=("part.bin", chunk, "application/octet-stream")))
+        done = await sdk.uploads.complete(
+            upload.id, part_ids=[part.id for part in parts])
+        assert done.status == "completed"
+        assert done.file is not None
+        assert done.file.filename == "sdk.bin"
+        content = await sdk.files.content(done.file.id)
+        assert content.content == payload
+
+        pending = await sdk.uploads.create(
+            bytes=1, filename="cancel.bin",
+            mime_type="application/octet-stream", purpose="assistants")
+        cancelled = await sdk.uploads.cancel(pending.id)
+        assert cancelled.status == "cancelled"
+    finally:
+        await http_client.aclose()
+
+
 async def test_sdk_videos_roundtrip(client, auth):
     """The official videos client always sends multipart; it must poll to
     ``completed``, list, download, remix and delete against our task store."""

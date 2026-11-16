@@ -14,7 +14,7 @@ muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/co
 - **Stored Chat Completions**：`store: true` 的补全可以 `list` / `retrieve` / `update`（元数据）/ `delete`，并通过 `/messages` 读取输入消息；默认不存储，与 OpenAI 一致。
 - **附件真的能读**：`file` / `input_file` / `input_audio` 内容部件会作为 `file_ref` 附件上传到账号 VM，Agent 读取文件内容后回答（逆向实测：从上传的 txt 里精确读回指定密语）。
 - **网页对话里的产物不会丢**：Agent 在聊天中生成的图片、视频和文档（上游 `delta.presentation`）会被下载并托管到 `/v1/media`，以 Markdown 追加到回复里；网页检索读过的来源（`message_done.resources` 的 `citation`）会变成标准的 `url_citation` annotations。网页端能看到的东西，API 端同样能看到。
-- **OpenAI Files API**：`POST /v1/files` 上传一次，聊天与 Responses 用 `file_id` 引用；`/v1/files/{id}/content` 取回原文件，支持列表、检索、删除与过期清理。
+- **OpenAI Files / Uploads API**：`POST /v1/files` 上传一次，聊天与 Responses 用 `file_id` 引用；`/v1/files/{id}/content` 取回原文件，支持列表、检索、删除与过期清理。`/v1/uploads` 提供 64 MiB 分片续传，完成后自动生成普通 Files 对象。
 - **Responses API 完整可用**：`previous_response_id` 有状态续聊（落盘，重启不丢）、`tools`/`tool_choice` 函数调用、完整流式事件序、`response.in_progress` / annotation 事件、`max_output_tokens` 截断语义，以及 `GET`/`DELETE /v1/responses/{id}`、`/input_items`、`/input_tokens`、`/cancel`。
 - **系统提示词生效**：`system` / `developer` 消息走"VM 托管规则 + 会话内指令块"两层注入，模型会真正跟随角色、格式与约束。
 - **工具调用走原生通道**：OpenAI `tools` 注册成 muse.ai 的原生客户端命令，Agent 在自己的工具循环里调用，再还原成标准 `tool_calls`；Planner 兜底，支持 legacy `functions` / `function_call` 与 `parallel_tool_calls`。
@@ -23,7 +23,7 @@ muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/co
 - **异常路径干净**：客户端断开、超时、换号重试都会真正取消上游正在执行的轮次，被中止的线程直接丢弃，不会把半截回复泄漏进下一轮。
 - **多账号、多会话**：账号池负责调度、冷却与故障转移；会话按 API Key 隔离，热线程复用降低首字延迟。
 - **多 Key 数据隔离**：`/v1/files`、stored completions、Responses 链与图片任务都带 owner；一把 Key 不能列出、下载、续聊或删除另一把 Key 的数据。
-- **图片与视频**：文生图、参考图、异步任务、文生视频、透明背景抠图都在同一个网关里。视频接口按 OpenAI Sora 的形状提供 `POST /v1/videos`（JSON 或 multipart）、检索、分页列表、`/content` 下载、`/remix`、删除，状态为 `queued` / `in_progress` / `completed` / `failed`。
+- **图片与视频**：文生图、参考图、异步任务、文生视频、透明背景抠图都在同一个网关里；图片支持 `output_format`（png/jpeg/webp）与 `output_compression` 本地转码。视频接口按 OpenAI Sora 的形状提供 `POST /v1/videos`（JSON 或 multipart）、检索、分页列表、`/content` 下载、`/remix`、删除，状态为 `queued` / `in_progress` / `completed` / `failed`。
 - **自带控制台**：账号池、API 密钥、请求日志与流量统计；界面沿用 muse.ai 的视觉语言（米白画布、药丸控件、克制的蓝色、轻量动效），浅色/深色/跟随系统，移动端可用，零外部依赖。
 
 ## 快速开始
@@ -187,6 +187,21 @@ resp = client.chat.completions.create(
 
 `file_id` 会在请求进入提示词前展开成内联 data URL；`input_file` / `input_image` 的 `file_id` 同样可用。上传文件保存在 `data/files`，默认保留 30 天（`MUSE2API_FILES_RETENTION_DAYS`）。
 
+大文件可以走标准 Uploads 分片流程（0.13.0）：
+
+```python
+upload = client.uploads.create(
+    bytes=os.path.getsize("big.pdf"), filename="big.pdf",
+    mime_type="application/pdf", purpose="user_data")
+part_ids = []
+with open("big.pdf", "rb") as fh:
+    while chunk := fh.read(64 * 1024 * 1024):
+        part_ids.append(client.uploads.parts.create(upload.id, data=chunk).id)
+file = client.uploads.complete(upload.id, part_ids=part_ids).file
+```
+
+完成后返回普通 Files 对象，后续用 `file.id` 引用即可；分片默认只在上传未完成时保留，Upload 本身 1 小时后过期。
+
 ### 网页对话里的图片、视频与引用
 
 muse.ai 的 Agent 会在聊天中间直接生成图片/视频/文档，也会在网页搜索后附带来源。这些事件原本只属于网页端，网关现在把它们翻译成标准 API 形态：
@@ -237,6 +252,7 @@ muse.ai 的 Agent 会在聊天中间直接生成图片/视频/文档，也会在
 | GET | `/healthz` · `/readyz` | 存活 / 就绪检查 |
 | GET | `/v1/models` · `/v1/models/{id}` | 模型列表 / 单个模型（仅 muse-chat / muse-image / muse-video） |
 | POST | `/v1/files` · GET `/v1/files[/{id}[/content]]` · DELETE | OpenAI Files API：上传、列表、检索、下载、删除 |
+| POST | `/v1/uploads` · `/{id}/parts` · `/{id}/complete` · `/{id}/cancel` | OpenAI Uploads API：分片上传，完成后生成普通 Files 对象 |
 | POST | `/v1/chat/completions` | 聊天：流式、图片/文件/音频输入、工具调用、JSON 模式、网页搜索、`n>1`、stored completions |
 | GET/POST/DELETE | `/v1/chat/completions[/{id}[/messages]]` | 列出 / 检索 / 改元数据 / 删除已存储的补全（`store: true`） |
 | POST | `/v1/responses` | OpenAI Responses API（有状态、函数调用、网页搜索、annotations） |
@@ -272,6 +288,11 @@ curl http://localhost:18610/v1/images/generations \
 curl http://localhost:18610/v1/images/generations \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"prompt":"模特穿着这件卫衣，棚拍","image":"data:image/jpeg;base64,..."}'
+
+# 指定输出格式与压缩率（png / jpeg / webp）
+curl http://localhost:18610/v1/images/generations \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"prompt":"一只红狐狸","output_format":"webp","output_compression":80}'
 
 # 异步图片（避免代理超时）
 curl http://localhost:18610/v1/images/generations \
@@ -322,7 +343,7 @@ client.chat.completions.delete(resp.id)
 | `MUSE2API_REQUEST_LOG_RETENTION_DAYS` | `14` | 请求日志保留天数 |
 | `MUSE2API_MEDIA_RETENTION_DAYS` | `14` | 媒体文件保留天数，`0` 关闭清理 |
 | `MUSE2API_RESPONSE_TTL` | `604800` | Responses 会话可续聊的秒数 |
-| `MUSE2API_FILE_MAX_BYTES` | `104857600` | `/v1/files` 单文件上限（100 MiB） |
+| `MUSE2API_FILE_MAX_BYTES` | `104857600` | `/v1/files` 与 `/v1/uploads` 单文件上限（100 MiB） |
 | `MUSE2API_FILES_RETENTION_DAYS` | `30` | 上传文件保留天数，`0` 关闭清理 |
 | `MUSE2API_CHAT_MEDIA` | `true` | 是否把聊天内生成的图片/视频/文档重新托管并追加到回复 |
 | `MUSE2API_CHAT_MEDIA_MAX_BYTES` | `33554432` | 聊天内产物下载上限（32 MiB），`0` 不限制 |
@@ -409,7 +430,7 @@ docker run -d --name muse2api \
 - 保留 `Authorization` 请求头；
 - 反向代理若有约 100 秒限制，图片生成请使用 `async` 任务。
 
-数据都在 `data/`：`accounts.json`、`keys.json`、`requests.db`、`responses.json`、`chat_completions.json`、`tasks.json`、`files.json`、`media/`、`files/`、`harness_backup/`。升级前备份这个目录即可。
+数据都在 `data/`：`accounts.json`、`keys.json`、`requests.db`、`responses.json`、`chat_completions.json`、`tasks.json`、`files.json`、`uploads.json`、`media/`、`files/`、`uploads/`、`harness_backup/`。升级前备份这个目录即可。
 
 ## 已知限制
 

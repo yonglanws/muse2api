@@ -18,11 +18,12 @@ from fastapi.responses import Response
 
 from ...errors import InvalidRequest, NotFound
 from ...services.container import Services
+from ...services.file_store import FILE_PURPOSES
 from ..deps import get_services, require_api_key
 
 router = APIRouter(tags=["files"], dependencies=[Depends(require_api_key)])
 
-_PURPOSES = {"assistants", "batch", "fine-tune", "vision", "user_data", "evals"}
+_PURPOSES = FILE_PURPOSES
 
 
 def _owner(request: Request) -> str | None:

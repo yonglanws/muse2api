@@ -60,6 +60,19 @@ class ChatCompletionUpdateRequest(_Lenient):
     metadata: dict[str, Any] | None = None
 
 
+class UploadCreateRequest(_Lenient):
+    bytes: int = Field(gt=0)
+    filename: str = Field(min_length=1)
+    mime_type: str = Field(min_length=1)
+    purpose: str
+    expires_after: dict[str, Any] | None = None
+
+
+class UploadCompleteRequest(_Lenient):
+    part_ids: list[str] = Field(min_length=1)
+    md5: str | None = None
+
+
 class ImageGenerationRequest(_Lenient):
     prompt: str = Field(min_length=1)
     model: str | None = None

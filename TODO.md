@@ -102,6 +102,7 @@
 | 0.12.0 | Stored Chat Completions；tiktoken 用量/截断；Sora 形状 `/v1/videos`；Responses 对象面与 instructions 语义；Files 过期/分页 |
 | 0.12.1 | 多 Key 数据隔离；Responses SSE `event:`/retrieve stream；legacy function_call；function_call_output 附件；file_url；JSON 模式媒体；过期文件字节清理；删除墓碑 |
 | 0.12.2 | legacy function_call 计入 completion usage；过期文件按 id 查询也回收字节；同时间戳 Files 分页不丢条目 |
+| 0.13.0 | OpenAI Uploads 分片上传（64 MiB/片，完成后生成 Files 对象）；图片 output_format/output_compression 本地转码 |
 
 详细记录：
 

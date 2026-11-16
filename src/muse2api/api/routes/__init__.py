@@ -10,13 +10,14 @@ from . import (
     media,
     models,
     responses,
+    uploads,
     videos,
 )
 
 
 def build_router() -> APIRouter:
     router = APIRouter()
-    for module in (health, models, files, chat, responses, images, videos, media,
+    for module in (health, models, files, uploads, chat, responses, images, videos, media,
                    admin, dashboard):
         router.include_router(module.router)
     return router

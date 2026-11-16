@@ -119,6 +119,20 @@ client.chat.completions.create(model="muse-chat", messages=[{
 （`expires_after` 可指定 1 小时到 30 天的过期时间）。Files、stored completions、Responses
 链与图片任务都按 API Key 隔离。
 
+0.13.0 起支持 OpenAI Uploads 分片流程；`complete` 返回的 `upload.file` 就是普通 Files 对象：
+
+```python
+upload = client.uploads.create(
+    bytes=size, filename="big.pdf", mime_type="application/pdf",
+    purpose="user_data")
+parts = [client.uploads.parts.create(upload.id, data=chunk).id
+         for chunk in chunks_of_at_most_64_mib]
+file = client.uploads.complete(upload.id, part_ids=parts).file
+```
+
+分片按 `part_ids` 的顺序拼接，必须在声明字节数完全一致时才能完成；可选 `md5`
+用于校验。Upload 默认 1 小时后过期，`cancel` 会清理未完成的分片。
+
 ## Stored Chat Completions（0.12.0）
 
 `store: true` 的补全与 OpenAI 一样可以被检索、打标签和删除：

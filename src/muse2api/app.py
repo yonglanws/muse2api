@@ -50,6 +50,7 @@ async def _housekeeping(services: Services) -> None:
                 services.settings.files_retention_days * 86400)
             if removed_files:
                 log.info("file cleanup: removed %d expired upload(s)", removed_files)
+            services.uploads.prune()
 
 
 def create_app(settings: Settings | None = None, driver: MuseDriver | None = None) -> FastAPI:
@@ -64,6 +65,7 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
         services.responses.load()
         services.completions.load()
         services.files.load()
+        services.uploads.load()
         await services.keys.load()
         await services.requests.open()
         await services.requests.prune(settings.request_log_retention_days)

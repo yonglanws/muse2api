@@ -242,6 +242,14 @@ class Settings(BaseSettings):
         return self.data_dir / "files.json"
 
     @property
+    def uploads_dir(self) -> Path:
+        return self.data_dir / "uploads"
+
+    @property
+    def uploads_file(self) -> Path:
+        return self.data_dir / "uploads.json"
+
+    @property
     def key_file(self) -> Path:
         return self.data_dir / "api_key"
 
@@ -258,7 +266,7 @@ class Settings(BaseSettings):
         return self.browser_profile_dir or (self.data_dir / "browser-profile")
 
     def ensure_dirs(self) -> None:
-        for d in (self.data_dir, self.media_dir, self.files_dir):
+        for d in (self.data_dir, self.media_dir, self.files_dir, self.uploads_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def resolve_api_key(self) -> str:
