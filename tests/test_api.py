@@ -17,8 +17,11 @@ def test_auth_required(client):
 
 
 def test_models(client, auth):
-    ids = {m["id"] for m in client.get("/v1/models", headers=auth).json()["data"]}
-    assert {"muse-chat", "muse-image", "muse-video", "gpt-4o"} <= ids
+    models = client.get("/v1/models", headers=auth).json()["data"]
+    ids = {m["id"] for m in models}
+    assert ids == {"muse-chat", "muse-image", "muse-video"}
+    # Aliases are accepted for compatibility but never advertised as models.
+    assert all("alias_of" not in m for m in models)
 
 
 def test_chat_non_stream(client, auth):

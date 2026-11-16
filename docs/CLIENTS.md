@@ -8,7 +8,7 @@ muse2api 对外只说 OpenAI 协议。任何 OpenAI SDK、聊天客户端或 Age
 |---|---|
 | API Base | `http://<host>:18610/v1` |
 | API Key | `MUSE2API_API_KEY`，或控制台创建的 `m2a-...` 密钥 |
-| 模型 | `muse-chat`，别名 `gpt-4o` / `dall-e-3` |
+| 模型 | `muse-chat` / `muse-image` / `muse-video`（`gpt-4o`、`dall-e-3` 等仅作兼容别名） |
 | 超时 | 建议 ≥ 240 秒（muse.ai 冷启动较慢） |
 
 ```python
@@ -67,7 +67,7 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用两层机�
 | `max_tokens` / `max_output_tokens` | 按 token 近似值（约 4 字符/token）截断输出，`finish_reason: "length"`（Responses：`status: "incomplete"`）——muse.ai 没有原生采样控制，截断是唯一能兑现上限的方式 |
 | `stream_options` | 仅在 `stream: true` 时有效；不带 stream 传会得到 400（与 OpenAI 一致） |
 | `temperature` / `top_p` / `presence_penalty` 等 | 接受但忽略——muse.ai 不暴露采样控制 |
-| 未知 `model` | 404 `model_not_found`（`param: "model"`），不再是静默回落默认模型；常用别名见 `/v1/models` 及 `gpt-4`、`gpt-3.5-turbo`、`o4-mini` 等 |
+| 未知 `model` | 404 `model_not_found`（`param: "model"`），不再是静默回落默认模型；`gpt-4o`、`gpt-4`、`gpt-3.5-turbo`、`o4-mini` 等别名仍可传入，但 `/v1/models` 只列出 muse 模型 |
 
 ## 错误与响应头（0.10.0）
 

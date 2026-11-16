@@ -74,7 +74,7 @@ curl http://localhost:18610/admin/accounts \
 |---|---|
 | API Base | `http://<网关地址>:18610/v1` |
 | API Key | `MUSE2API_API_KEY`，或控制台创建的 `m2a-...` 密钥 |
-| 模型 | `muse-chat`（别名 `gpt-4o`、`gpt-4.1`、`claude-sonnet-4` 等） |
+| 模型 | `muse-chat`、`muse-image`、`muse-video`；`gpt-4o` 等常见名称仅作兼容别名，不出现在 `/v1/models` |
 | 超时 | 建议 ≥ 240 秒（muse.ai 冷启动较慢） |
 
 ```python
@@ -192,7 +192,7 @@ resp = client.chat.completions.create(
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/healthz` · `/readyz` | 存活 / 就绪检查 |
-| GET | `/v1/models` | 模型列表与别名 |
+| GET | `/v1/models` | 模型列表（仅 muse-chat / muse-image / muse-video） |
 | POST | `/v1/chat/completions` | 聊天：流式、图片/文件/音频输入、工具调用、JSON 模式、`n>1` |
 | POST | `/v1/responses` | OpenAI Responses API（有状态、函数调用） |
 | POST | `/v1/images/generations` · GET `/{id}` | 文生图；`"async": true` 返回任务 |
