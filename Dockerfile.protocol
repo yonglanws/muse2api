@@ -6,15 +6,20 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 ARG HTTPS_PROXY
-RUN pip install --no-cache-dir . \
- && mkdir -p /app/tiktoken-cache \
+RUN pip install --no-cache-dir '.[matting]' \
+ && mkdir -p /app/tiktoken-cache /app/model-cache \
  && HTTPS_PROXY=$HTTPS_PROXY TIKTOKEN_CACHE_DIR=/app/tiktoken-cache \
     python -c "import tiktoken; tiktoken.get_encoding('o200k_base')" \
+ && HTTP_PROXY=$HTTPS_PROXY HTTPS_PROXY=$HTTPS_PROXY U2NET_HOME=/app/model-cache \
+    python -c "from rembg import new_session; new_session('birefnet-general-lite')" \
+ && chown -R muse:muse /app/model-cache \
  && rm -rf /root/.cache/pip
 
 ENV MUSE2API_HOST=0.0.0.0 \
     MUSE2API_DATA_DIR=/app/data \
-    TIKTOKEN_CACHE_DIR=/app/tiktoken-cache
+    MUSE2API_MATTING_MODEL=birefnet-general-lite \
+    TIKTOKEN_CACHE_DIR=/app/tiktoken-cache \
+    U2NET_HOME=/app/model-cache
 
 RUN mkdir -p /app/data && chown -R muse:muse /app
 USER muse

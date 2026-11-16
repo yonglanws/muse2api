@@ -8,7 +8,7 @@ muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/co
 
 ## 特性
 
-- **纯协议驱动**：Noise XX + `chat.stream` + 线程订阅，不需要 Chromium。`Dockerfile.protocol` 镜像约 194 MB，冷启动只付一次握手（网关启动时预热）。
+- **纯协议驱动**：Noise XX + `chat.stream` + 线程订阅，不需要 Chromium。`Dockerfile.protocol` 镜像约 1.24 GB（含 rembg/pymatting 与 BiRefNet-lite 模型），冷启动只付一次握手（网关启动时预热）。
 - **对外只说 OpenAI 协议**：流式 SSE、`tool_calls`、`response_format`、`stop`、`n>1`（含流式多选）、`max_tokens`、`stream_options`、`system_fingerprint`；404/405/校验错误一律 OpenAI 错误信封，响应带 `x-request-id` / `openai-version` / `openai-processing-ms`。调用方无法从信封形状上分辨它与 api.openai.com。
 - **用量可解释**：`usage` 由本地 `tiktoken`（`o200k_base`，镜像内预缓存）计数，带上 `prompt_tokens_details` / `completion_tokens_details`；`max_tokens` 也按同一 tokenizer 精确截断，而不是按字符估算。muse.ai 不返回计费 token，这是唯一诚实的近似。
 - **Stored Chat Completions**：`store: true` 的补全可以 `list` / `retrieve` / `update`（元数据）/ `delete`，并通过 `/messages` 读取输入消息；默认不存储，与 OpenAI 一致。
@@ -324,7 +324,7 @@ client.chat.completions.update(resp.id, metadata={"trace": "renamed"})
 client.chat.completions.delete(resp.id)
 ```
 
-`background: "transparent"` 会在本地用 BiRefNet 抠图并返回 RGBA PNG，需要 `pip install -e '.[matting]'`，模型首次使用时下载到 `~/.u2net`。
+`background: "transparent"` 会在本地用 BiRefNet 抠图并返回 RGBA PNG。`Dockerfile.protocol` 已安装 `[matting]` extra 并内置 `birefnet-general-lite`（约 224 MB，缓存于 `/app/model-cache`）；本地开发用 `pip install -e '.[matting]'`，模型首次使用下载到 rembg 缓存（默认 `~/.rembg`，可用 `U2NET_HOME` 覆盖）。
 
 ## 配置
 

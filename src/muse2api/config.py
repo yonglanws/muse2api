@@ -195,9 +195,9 @@ class Settings(BaseSettings):
 
     # --- background removal (images with background="transparent") ---
     matting_model: str = Field(
-        default="birefnet-general",
-        description="rembg model used to cut out the subject, e.g. birefnet-general "
-        "(best) or birefnet-general-lite (faster).",
+        default="birefnet-general-lite",
+        description="rembg model used to cut out the subject: birefnet-general-lite "
+        "(fast default) or birefnet-general (best, ~1 GB model).",
     )
 
     # --- keepalive (session renewal) ---

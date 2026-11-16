@@ -103,6 +103,7 @@
 | 0.12.1 | 多 Key 数据隔离；Responses SSE `event:`/retrieve stream；legacy function_call；function_call_output 附件；file_url；JSON 模式媒体；过期文件字节清理；删除墓碑 |
 | 0.12.2 | legacy function_call 计入 completion usage；过期文件按 id 查询也回收字节；同时间戳 Files 分页不丢条目 |
 | 0.13.0 | OpenAI Uploads 分片上传（64 MiB/片，完成后生成 Files 对象）；图片 output_format/output_compression 本地转码 |
+| 0.13.1 | 生产镜像内置 `[matting]` extra（rembg + pymatting），预下载 BiRefNet-lite；`background=transparent` 真正返回 RGBA PNG |
 
 详细记录：
 
