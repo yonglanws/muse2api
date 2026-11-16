@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, File, Request, UploadFile
 from ...errors import InvalidRequest, NotFound
 from ...services.container import Services
 from ...services.file_store import FILE_PURPOSES
+from ...services.upload_store import MAX_PART_BYTES
 from ..deps import get_services, require_api_key
 from ..schemas import UploadCompleteRequest, UploadCreateRequest
 
@@ -68,7 +69,16 @@ async def create_upload(body: UploadCreateRequest, request: Request,
 async def create_upload_part(upload_id: str, request: Request,
                              data: UploadFile = File(...),
                              svc: Services = Depends(get_services)) -> dict:
-    part = svc.uploads.add_part(upload_id, await data.read(), _owner(request))
+    if data.size and data.size > MAX_PART_BYTES:
+        raise InvalidRequest(
+            f"each part must be at most {MAX_PART_BYTES} bytes", param="data")
+    # Never buffer an oversized part just to reject it; the extra byte tells us
+    # the client ignored the 64 MiB limit.
+    raw = await data.read(MAX_PART_BYTES + 1)
+    if len(raw) > MAX_PART_BYTES:
+        raise InvalidRequest(
+            f"each part must be at most {MAX_PART_BYTES} bytes", param="data")
+    part = svc.uploads.add_part(upload_id, raw, _owner(request))
     if part is None:
         raise _missing(upload_id)
     return part

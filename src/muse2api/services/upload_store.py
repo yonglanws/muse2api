@@ -24,7 +24,7 @@ from .ownership import visible
 log = logging.getLogger(__name__)
 
 _MAX_PARTS = 128
-_PART_MAX_BYTES = 64 * 1024 * 1024
+MAX_PART_BYTES = 64 * 1024 * 1024
 _MAX_INDEX_ENTRIES = 1000
 _SAFE_STORED = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 
@@ -178,9 +178,9 @@ class UploadStore:
                 param="upload_id", code="upload_not_pending")
         if not data:
             raise InvalidRequest("part data must not be empty", param="data")
-        if len(data) > _PART_MAX_BYTES:
+        if len(data) > MAX_PART_BYTES:
             raise InvalidRequest(
-                f"each part must be at most {_PART_MAX_BYTES} bytes", param="data")
+                f"each part must be at most {MAX_PART_BYTES} bytes", param="data")
         parts = entry["parts"]
         if len(parts) >= _MAX_PARTS:
             raise InvalidRequest(
