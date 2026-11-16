@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ..core.compaction import decode_compaction
 from ..errors import InvalidRequest
 from .ownership import visible
 
@@ -229,6 +230,12 @@ def items_to_messages(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             messages.append({"role": "tool",
                              "tool_call_id": item.get("call_id") or "",
                              "content": content})
+        elif item_type == "compaction":
+            summary = decode_compaction(str(item.get("encrypted_content") or ""))
+            if summary:
+                messages.append({
+                    "role": "system",
+                    "content": f"Compacted conversation state:\n{summary}"})
 
     for item in items:
         if isinstance(item, dict):

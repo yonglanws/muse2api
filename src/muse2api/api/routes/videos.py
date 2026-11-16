@@ -11,8 +11,12 @@ extensions, character cameos) return an explicit 501 rather than a fake job.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
+import re
+import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -22,6 +26,7 @@ from starlette.datastructures import UploadFile
 
 from ...core.media import load_image_ref
 from ...core.models import MODELS
+from ...core.video_variants import render_variant
 from ...drivers.base import InputImage, VideoRequest
 from ...errors import FeatureNotImplemented, InvalidRequest, NotFound
 from ...services.container import Services
@@ -161,6 +166,16 @@ def _video_id(task_id: str) -> str:
 def _task_id(video_id: str) -> str:
     """Public id → internal task id (old ``task_`` ids keep working)."""
     return "task_" + video_id[6:] if video_id.startswith("video_") else video_id
+
+
+def _video_source(task: Task) -> str:
+    result = task.result or {}
+    return str(result.get("name") or str(result.get("url") or "").rsplit("/", 1)[-1])
+
+
+def _variant_cache_name(source: str, variant: str) -> str:
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(source).stem)[:80] or "video"
+    return f"{variant}_{stem}.png"
 
 
 def _get_video(request: Request, video_id: str, svc: Services) -> Task:
@@ -373,14 +388,23 @@ async def get_video_content(
     if task.status != TaskStatus.SUCCEEDED:
         raise NotFound(f"video '{video_id}' has no downloadable content",
                        param="video_id")
-    if variant != "video":
+    source = _video_source(task)
+    if variant == "video":
+        return FileResponse(svc.media.path_of(source),
+                            media_type=str((task.result or {}).get("mime")
+                                           or "video/mp4"))
+    if variant not in ("thumbnail", "spritesheet"):
         raise InvalidRequest(
-            f"variant '{variant}' is not produced by muse.ai",
-            param="variant", code="unsupported_variant")
-    result = task.result or {}
-    name = str(result.get("name") or str(result.get("url") or "").rsplit("/", 1)[-1])
-    return FileResponse(svc.media.path_of(name),
-                        media_type=str(result.get("mime") or "video/mp4"))
+            f"variant '{variant}' is not supported; use video, thumbnail or "
+            "spritesheet", param="variant", code="unsupported_variant")
+    cached = svc.media.root / _variant_cache_name(source, variant)
+    if not cached.is_file():
+        data, _ = await asyncio.to_thread(
+            render_variant, svc.media.path_of(source), variant)
+        tmp = cached.with_name(cached.name + "." + uuid.uuid4().hex + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(cached)
+    return FileResponse(cached, media_type="image/png")
 
 
 @router.post("/v1/videos/{video_id}/remix")
@@ -418,9 +442,11 @@ async def delete_video(video_id: str, request: Request,
     if not task.finished:
         raise InvalidRequest("video is still in progress and cannot be deleted",
                              param="video_id", code="video_not_finished")
-    result = task.result or {}
-    name = str(result.get("name") or str(result.get("url") or "").rsplit("/", 1)[-1])
-    if name:
-        svc.media.delete(name)
+    source = _video_source(task)
+    if source:
+        svc.media.delete(source)
+        for variant in ("thumbnail", "spritesheet"):
+            (svc.media.root / _variant_cache_name(source, variant)).unlink(
+                missing_ok=True)
     svc.tasks.delete(_task_id(video_id))
     return {"id": video_id, "object": "video.deleted", "deleted": True}

@@ -8,14 +8,14 @@ muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/co
 
 ## 特性
 
-- **纯协议驱动**：Noise XX + `chat.stream` + 线程订阅，不需要 Chromium。`Dockerfile.protocol` 镜像约 1.24 GB（含 rembg/pymatting 与 BiRefNet-lite 模型），冷启动只付一次握手（网关启动时预热）。
+- **纯协议驱动**：Noise XX + `chat.stream` + 线程订阅，不需要 Chromium。`Dockerfile.protocol` 镜像约 1.69 GB（含 rembg/pymatting、BiRefNet-lite 模型与 ffmpeg），冷启动只付一次握手（网关启动时预热）。
 - **对外只说 OpenAI 协议**：流式 SSE、`tool_calls`、`response_format`、`stop`、`n>1`（含流式多选）、`max_tokens`、`stream_options`、`system_fingerprint`；404/405/校验错误一律 OpenAI 错误信封，响应带 `x-request-id` / `openai-version` / `openai-processing-ms`。调用方无法从信封形状上分辨它与 api.openai.com。
 - **用量可解释**：`usage` 由本地 `tiktoken`（`o200k_base`，镜像内预缓存）计数，带上 `prompt_tokens_details` / `completion_tokens_details`；`max_tokens` 也按同一 tokenizer 精确截断，而不是按字符估算。muse.ai 不返回计费 token，这是唯一诚实的近似。
 - **Stored Chat Completions**：`store: true` 的补全可以 `list` / `retrieve` / `update`（元数据）/ `delete`，并通过 `/messages` 读取输入消息；默认不存储，与 OpenAI 一致。
 - **附件真的能读**：`file` / `input_file` / `input_audio` 内容部件会作为 `file_ref` 附件上传到账号 VM，Agent 读取文件内容后回答（逆向实测：从上传的 txt 里精确读回指定密语）。
 - **网页对话里的产物不会丢**：Agent 在聊天中生成的图片、视频和文档（上游 `delta.presentation`）会被下载并托管到 `/v1/media`，以 Markdown 追加到回复里；网页检索读过的来源（`message_done.resources` 的 `citation`）会变成标准的 `url_citation` annotations。网页端能看到的东西，API 端同样能看到。
 - **OpenAI Files / Uploads API**：`POST /v1/files` 上传一次，聊天与 Responses 用 `file_id` 引用；`/v1/files/{id}/content` 取回原文件，支持列表、检索、删除与过期清理。`/v1/uploads` 提供 64 MiB 分片续传，完成后自动生成普通 Files 对象。
-- **Responses API 完整可用**：`previous_response_id` 有状态续聊（落盘，重启不丢）、`tools`/`tool_choice` 函数调用、完整流式事件序、`response.in_progress` / annotation 事件、`max_output_tokens` 截断语义，以及 `GET`/`DELETE /v1/responses/{id}`、`/input_items`、`/input_tokens`、`/cancel`。
+- **Responses API 完整可用**：`previous_response_id` 有状态续聊（落盘，重启不丢）、`tools`/`tool_choice` 函数调用、完整流式事件序、`response.in_progress` / annotation 事件、`max_output_tokens` 截断语义，以及 `GET`/`DELETE /v1/responses/{id}`、`/input_items`、`/input_tokens`、`/compact`、`/cancel`。
 - **Conversations API**：`/v1/conversations` 的创建、检索、改元数据、删除与 items 分页；Responses 传 `conversation=...` 会自动前置历史并在完成后追加本轮，等价于官方的有状态会话。
 - **系统提示词生效**：`system` / `developer` 消息走"VM 托管规则 + 会话内指令块"两层注入，模型会真正跟随角色、格式与约束。
 - **工具调用走原生通道**：OpenAI `tools` 注册成 muse.ai 的原生客户端命令，Agent 在自己的工具循环里调用，再还原成标准 `tool_calls`；Planner 兜底，支持 legacy `functions` / `function_call` 与 `parallel_tool_calls`。
@@ -24,7 +24,7 @@ muse2api 是一个自托管的**网页反代网关**：对外提供 `/v1/chat/co
 - **异常路径干净**：客户端断开、超时、换号重试都会真正取消上游正在执行的轮次，被中止的线程直接丢弃，不会把半截回复泄漏进下一轮。
 - **多账号、多会话**：账号池负责调度、冷却与故障转移；会话按 API Key 隔离，热线程复用降低首字延迟。
 - **多 Key 数据隔离**：`/v1/files`、Conversations、stored completions、Responses 链与图片任务都带 owner；一把 Key 不能列出、下载、续聊或删除另一把 Key 的数据。
-- **图片与视频**：文生图、参考图、异步任务、文生视频、透明背景抠图都在同一个网关里；图片支持 `output_format`（png/jpeg/webp）与 `output_compression` 本地转码。视频接口按 OpenAI Sora 的形状提供 `POST /v1/videos`（JSON 或 multipart）、检索、分页列表、`/content` 下载、`/remix`、删除，状态为 `queued` / `in_progress` / `completed` / `failed`。
+- **图片与视频**：文生图、参考图、异步任务、文生视频、透明背景抠图都在同一个网关里；图片支持 `output_format`（png/jpeg/webp）与 `output_compression` 本地转码。视频接口按 OpenAI Sora 的形状提供 `POST /v1/videos`（JSON 或 multipart）、检索、分页列表、`/content` 下载（`variant=video|thumbnail|spritesheet`）、`/remix`、删除，状态为 `queued` / `in_progress` / `completed` / `failed`。
 - **自带控制台**：账号池、API 密钥、请求日志与流量统计；界面沿用 muse.ai 的视觉语言（米白画布、药丸控件、克制的蓝色、轻量动效），浅色/深色/跟随系统，移动端可用，零外部依赖。
 
 ## 快速开始
@@ -218,7 +218,7 @@ muse.ai 的 Agent 会在聊天中间直接生成图片/视频/文档，也会在
 - **有状态**：响应默认存储到 `data/responses.json`，后续请求带 `previous_response_id` 即自动续上整段对话（TTL `MUSE2API_RESPONSE_TTL`，默认 7 天）；也可以创建 `/v1/conversations` 并传 `conversation=...`，网关会前置该会话的 items 并在完成后追加本轮；`store: false` 不落响应存储（Conversation 仍会记录本轮）；未知 id 返回 404。
 - **函数调用**：`tools` / `tool_choice` 走与 chat completions 相同的规划器，输出标准 `function_call` 项；`function_call` / `function_call_output` 可作为输入项回传续接；流式有 `response.function_call_arguments.delta/done` 事件。同时接受 Chat 的嵌套形状和 Responses 的顶层函数工具形状。
 - **完整事件序**：`response.created` / `response.in_progress` / `output_text.done` / `content_part.done` / annotation 事件补齐；`max_output_tokens` 触发 `status: "incomplete"` 与 `response.incomplete`；流式错误使用 Responses 的 `{"type": "error", ...}` 事件。
-- **完整对象面**：`GET /v1/responses/{id}`、`DELETE`、`/input_items`（分页，默认 `desc`）、`/input_tokens`（不生成、只计数）、`/cancel`（仅进行中的请求）。
+- **完整对象面**：`GET /v1/responses/{id}`、`DELETE`、`/input_items`（分页，默认 `desc`）、`/input_tokens`（不生成、只计数）、`/compact`（把长会话压成可回传的 compaction item）、`/cancel`（仅进行中的请求）。
 - **当前对象字段**：`completed_at`、`service_tier`、`access_programs`、`background`、`conversation`、`max_tool_calls`、`top_logprobs`、`safety_identifier`、`prompt_cache_key`，以及 `usage.input_tokens_details.cache_write_tokens` 与 `output[*].content[*].logprobs`；进行中的响应可被检索，取消后会持久化为 `cancelled`。
 - `metadata` / `user` / `parallel_tool_calls` / `tool_choice` / `reasoning` / `truncation` 会原样回显在响应对象里；`metadata` 按 OpenAI 的 16 对 / 64 / 512 字符边界校验。
 - `previous_response_id` 续聊时**永远不继承**上一轮的 `instructions`（OpenAI 语义），本轮自己的 instructions 才会生效。
@@ -232,6 +232,15 @@ client.responses.create(model="muse-chat", input="第一轮", conversation=conv.
 client.responses.create(model="muse-chat", input="第二轮", conversation=conv.id)
 client.conversations.items.list(conv.id)   # 分页查看本轮各方 items
 client.conversations.delete(conv.id)
+```
+
+长会话可以压缩成可回传的 compaction item：
+
+```python
+compacted = client.responses.compact(model="muse-chat", input="很长的历史……")
+client.responses.create(
+    model="muse-chat",
+    input=[compacted.output[0], {"role": "user", "content": "继续"}])
 ```
 
 ### 参数支持
@@ -269,14 +278,14 @@ client.conversations.delete(conv.id)
 | POST | `/v1/responses` | OpenAI Responses API（有状态、函数调用、网页搜索、annotations） |
 | GET/DELETE | `/v1/responses/{id}` | 检索 / 删除已存储的响应 |
 | GET | `/v1/responses/{id}/input_items` | 分页读取该响应的输入项（默认 `desc`） |
-| POST | `/v1/responses/input_tokens` · `/{id}/cancel` | 输入 token 计数 / 取消进行中的响应 |
+| POST | `/v1/responses/input_tokens` · `/compact` · `/{id}/cancel` | 输入 token 计数 / 压缩会话 / 取消进行中的响应 |
 | POST/GET/DELETE | `/v1/conversations[/{id}]` | OpenAI Conversations API：创建、检索、改元数据、删除 |
 | GET/POST | `/v1/conversations/{id}/items` | 分页读取 / 追加会话 items |
 | GET/DELETE | `/v1/conversations/{id}/items/{item_id}` | 检索 / 删除单个 item |
 | POST | `/v1/images/generations` · GET `/{id}` | 文生图；`"async": true` 返回任务 |
 | POST | `/v1/images/edits` | multipart 参考图 + 提示词 |
 | POST | `/v1/videos` | Sora 形状创建（JSON 或 multipart，含 `input_reference`） |
-| GET | `/v1/videos` · `/{id}` · `/{id}/content` | 分页列表 / 检索 / 下载视频 |
+| GET | `/v1/videos` · `/{id}` · `/{id}/content` | 分页列表 / 检索 / 下载视频（`variant=video|thumbnail|spritesheet`） |
 | POST/DELETE | `/v1/videos/{id}/remix` · `/{id}` | 基于原视频重制 / 删除 |
 | GET | `/v1/media/{name}` | 下载生成的媒体（含聊天内生成的图片/视频/文档） |
 | GET/POST/PATCH/DELETE | `/admin/accounts[/{id}]` | 账号增删改查 |
@@ -322,6 +331,12 @@ curl http://localhost:18610/v1/videos \
 curl http://localhost:18610/v1/videos/$VIDEO_ID -H "Authorization: Bearer $KEY"
 curl -L http://localhost:18610/v1/videos/$VIDEO_ID/content \
   -H "Authorization: Bearer $KEY" -o video.mp4
+
+# 缩略图 / 拼图（本地 ffmpeg，结果缓存在 data/media）
+curl -L "http://localhost:18610/v1/videos/$VIDEO_ID/content?variant=thumbnail" \
+  -H "Authorization: Bearer $KEY" -o thumb.png
+curl -L "http://localhost:18610/v1/videos/$VIDEO_ID/content?variant=spritesheet" \
+  -H "Authorization: Bearer $KEY" -o sheet.png
 ```
 
 Stored Chat Completions：

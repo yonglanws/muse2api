@@ -41,6 +41,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from ...core.compaction import decode_compaction, encode_compaction
 from ...core.media import load_image_ref
 from ...core.models import resolve_model
 from ...core.params import validate_metadata
@@ -50,7 +51,11 @@ from ...errors import InvalidRequest, Muse2APIError, NotFound
 from ...services.container import Services
 from ...services.conversation_store import items_to_messages, messages_to_items
 from ..deps import conversation_key, get_services, public_base, require_api_key
-from ..schemas import ChatCompletionRequest, ChatMessage
+from ..schemas import (
+    ChatCompletionRequest,
+    ChatMessage,
+    ResponseCompactRequest,
+)
 from .chat import (
     _WEB_SEARCH_DIRECTIVE,
     _build_plan,
@@ -62,6 +67,13 @@ from .chat import (
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["responses"], dependencies=[Depends(require_api_key)])
+
+_COMPACT_DIRECTIVE = (
+    "Compact the conversation into a self-contained state summary. Preserve "
+    "all facts, decisions, identifiers, user preferences, constraints, "
+    "unresolved tasks and tool results. Remove repetition and small talk. "
+    "Reply with the summary only, in plain text; do not answer any question."
+)
 
 
 def _approx_tokens(text: str) -> int:
@@ -267,6 +279,16 @@ def _to_messages(body: ResponseRequest) -> list[dict]:
             if not isinstance(item, dict):
                 raise InvalidRequest("input items must be objects", param="input")
             itype = item.get("type")
+            if itype == "compaction":
+                summary = decode_compaction(str(item.get("encrypted_content") or ""))
+                if summary is None:
+                    raise InvalidRequest(
+                        "invalid compaction item; expected encrypted_content "
+                        "from POST /v1/responses/compact",
+                        param="input", code="invalid_compaction")
+                messages.append({"role": "system",
+                                 "content": f"Compacted conversation state:\n{summary}"})
+                continue
             if itype in _SKIPPABLE_ITEMS:
                 continue
             if itype in _UNSUPPORTED_ITEMS:
@@ -1142,6 +1164,81 @@ async def create_response(body: ResponseRequest, request: Request,
     return StreamingResponse(events(first), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+@router.post("/v1/responses/compact")
+async def compact_response(body: ResponseCompactRequest, request: Request,
+                           svc: Services = Depends(get_services)) -> dict:
+    """Compact a conversation into an opaque state item (gateway-local)."""
+    spec = resolve_model(body.model, "chat")
+    request.state.model = spec.id
+    if body.service_tier not in (None, "auto", "default", "flex",
+                                     "scale", "priority", "fast"):
+        raise InvalidRequest(
+            f"service_tier '{body.service_tier}' is not available for muse models",
+            param="service_tier")
+    owner = getattr(request.state, "key_id", None)
+    shim = ResponseRequest(input=body.input, instructions=body.instructions,
+                           model=body.model,
+                           previous_response_id=body.previous_response_id)
+    messages = _to_messages(shim)
+    if body.previous_response_id:
+        entry = svc.responses.get(body.previous_response_id, owner)
+        if entry is None:
+            raise NotFound(
+                f"No response found with id '{body.previous_response_id}'.",
+                param="previous_response_id")
+        stored = entry.get("messages") or []
+        stored = [m for m in stored
+                  if m.get("role") not in ("system", "developer")]
+        messages = stored + messages
+    if not messages:
+        raise InvalidRequest("input contains no text or images", param="input")
+    await _resolve_file_urls(messages, svc)
+    messages = [{"role": "system", "content": _COMPACT_DIRECTIVE}] + messages
+    plan_messages = svc.files.expand_messages(messages, owner)
+    chat_body = ChatCompletionRequest(
+        model=body.model,
+        messages=[ChatMessage(role=m["role"], content=m.get("content"))
+                  for m in plan_messages],
+        max_completion_tokens=2048,
+    )
+    plan = _build_plan(chat_body, plan_messages, svc.settings)
+    if not plan.prompt and not plan.images:
+        raise InvalidRequest("input contains no text or images", param="input")
+    images = [InputImage(*(await load_image_ref(ref))) for ref in plan.images]
+    request_obj = ChatRequest(
+        prompt=plan.prompt, model=spec.id, images=images,
+        timeout=svc.settings.chat_timeout,
+        first_token_timeout=svc.settings.first_token_timeout,
+        conversation_hint=conversation_key(request, None),
+        turns=plan.turns, followup_prompt=plan.followup_prompt,
+        tool_continuation=plan.tool_continuation,
+        images_current_only=plan.images_current_only,
+        system_fingerprint=plan.system_fp,
+        page_echo=(plan.current_user_text or "")[:200] or None,
+        tools=plan.tools, system_prompt=plan.system_prompt or None,
+        cancel=asyncio.Event(),
+    )
+    text = await _collect(svc.gateway.chat_stream(request_obj))
+    text = await _retry_nonstream(text, plan, request_obj, svc, plan_messages)
+    message, _finish = _message_from_text(plan, text)
+    summary = str(message.get("content") or text).strip()
+    if not summary:
+        raise InvalidRequest("compaction produced no summary",
+                             code="empty_compaction")
+    item = {
+        "id": "cmp_" + uuid.uuid4().hex[:24],
+        "type": "compaction",
+        "encrypted_content": encode_compaction(summary),
+    }
+    return {
+        "id": "resp_" + uuid.uuid4().hex[:24],
+        "object": "response.compaction",
+        "created_at": int(time.time()),
+        "output": [item],
+        "usage": _usage(plan.prompt, summary),
+    }
 
 
 @router.post("/v1/responses/input_tokens")

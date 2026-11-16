@@ -183,6 +183,24 @@ Conversation 与 `previous_response_id` 不能同时使用（400）。items 支�
 `item_reference` 会在展开为模型输入时解析到同一会话里的目标 item。数据落在
 `data/conversations.json`，按 API Key 隔离。
 
+## Responses compact（0.15.0）
+
+长会话可以压成 OpenAI 形状的 `response.compaction`：output 里是一个
+`type: "compaction"` 的 item，`encrypted_content` 对客户端保持不透明，回传到
+下一次 Responses/compact 时由网关展开为“Compacted conversation state”系统消息。
+
+```python
+compacted = client.responses.compact(
+    model="muse-chat", input="很长的历史……",
+    previous_response_id=previous.id)       # 二选一：input 或 previous_response_id
+follow = client.responses.create(
+    model="muse-chat",
+    input=[compacted.output[0], {"role": "user", "content": "继续"}])
+```
+
+`usage` 是本次压缩调用的 tiktoken 计数。compaction 内容是本网关生成的摘要，
+不是 OpenAI 的加密模型状态，因此只能由本网关回读。
+
 ## 视频（Sora 形状，0.12.0）
 
 ```python
@@ -190,14 +208,17 @@ video = client.videos.create(
     model="sora-2", prompt="枫叶在微风中飘落", seconds="4", size="1280x720")
 client.videos.retrieve(video.id)          # status: queued/in_progress/completed/failed
 content = client.videos.download_content(video.id)   # GET /v1/videos/{id}/content
+thumb = client.videos.download_content(video.id, variant="thumbnail")
+sheet = client.videos.download_content(video.id, variant="spritesheet")
 client.videos.list(limit=20, order="desc", after=...)
 client.videos.remix(video.id, prompt="换成夜景")
 client.videos.delete(video.id)
 ```
 
 `POST /v1/videos` 同时接受 JSON 与 multipart；`image` / `input_reference` 可以是 data URL、
-http(s) URL、base64、`file_id` 或上传文件。`edits` / `extensions` / `characters` 返回 501
-（上游只提供生成与重制）。
+http(s) URL、base64、`file_id` 或上传文件。`thumbnail` / `spritesheet` 由本地 ffmpeg
+从已生成的 MP4 提取并缓存到 `data/media`，删除视频时会一并清理；`edits` /
+`extensions` / `characters` 返回 501（上游只提供生成与重制）。
 
 ## Responses API（0.12.0）
 

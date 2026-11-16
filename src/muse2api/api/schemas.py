@@ -86,6 +86,18 @@ class ConversationItemsRequest(_Lenient):
     items: list[dict[str, Any]] = Field(min_length=1)
 
 
+class ResponseCompactRequest(_Lenient):
+    model: str | None = None
+    input: Any = None
+    instructions: Any = None
+    previous_response_id: str | None = None
+    image: Any = None
+    prompt_cache_key: str | None = None
+    prompt_cache_options: dict[str, Any] | None = None
+    prompt_cache_retention: str | None = None
+    service_tier: str | None = None
+
+
 class ImageGenerationRequest(_Lenient):
     prompt: str = Field(min_length=1)
     model: str | None = None

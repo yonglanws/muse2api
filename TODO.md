@@ -105,6 +105,7 @@
 | 0.13.0 | OpenAI Uploads 分片上传（64 MiB/片，完成后生成 Files 对象）；图片 output_format/output_compression 本地转码 |
 | 0.13.1 | 生产镜像内置 `[matting]` extra（rembg + pymatting），预下载 BiRefNet-lite；`background=transparent` 真正返回 RGBA PNG |
 | 0.14.0 | OpenAI Conversations API（CRUD + items 分页）；Responses `conversation` 自动前置历史并在完成后追加本轮 |
+| 0.15.0 | `/v1/responses/compact`（本地摘要 compaction item，可回传）；视频 `thumbnail`/`spritesheet`（本地 ffmpeg + 缓存） |
 
 详细记录：
 

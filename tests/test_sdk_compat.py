@@ -162,6 +162,27 @@ async def test_sdk_conversations_roundtrip(client, auth):
         await http_client.aclose()
 
 
+async def test_sdk_responses_compact_roundtrip(client, auth):
+    token = auth["Authorization"].split(" ", 1)[1]
+    sdk, http_client = _sdk_client(client, token)
+    try:
+        compacted = await sdk.responses.compact(
+            model="muse-chat", input="Remember the code word BANANA.")
+        assert compacted.object == "response.compaction"
+        assert compacted.usage.total_tokens > 0
+        assert len(compacted.output) == 1
+        item = compacted.output[0]
+        assert item.type == "compaction"
+        assert item.encrypted_content
+
+        follow = await sdk.responses.create(
+            model="muse-chat",
+            input=[item, {"role": "user", "content": "What is the code word?"}])
+        assert follow.status == "completed"
+    finally:
+        await http_client.aclose()
+
+
 async def test_sdk_videos_roundtrip(client, auth):
     """The official videos client always sends multipart; it must poll to
     ``completed``, list, download, remix and delete against our task store."""
