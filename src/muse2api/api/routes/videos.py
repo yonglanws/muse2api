@@ -150,8 +150,18 @@ def _owner(request: Request, task: Task) -> bool:
     return owner is None or owner == current
 
 
+def _video_id(task_id: str) -> str:
+    """Internal task id → Sora-shaped public id."""
+    return "video_" + task_id.removeprefix("task_")
+
+
+def _task_id(video_id: str) -> str:
+    """Public id → internal task id (old ``task_`` ids keep working)."""
+    return "task_" + video_id[6:] if video_id.startswith("video_") else video_id
+
+
 def _get_video(request: Request, video_id: str, svc: Services) -> Task:
-    task = svc.tasks.get(video_id)
+    task = svc.tasks.get(_task_id(video_id))
     if task is None or task.kind != "video" or not _owner(request, task):
         raise NotFound(f"video '{video_id}' not found", param="video_id")
     return task
@@ -185,8 +195,11 @@ def _video_view(task: Task, svc: Services) -> dict:
         completed_at = int(task.updated_at)
         if status == "completed" and svc.settings.media_retention_days > 0:
             expires_at = completed_at + int(svc.settings.media_retention_days * 86400)
+    remixed_from = task.request.get("remixed_from_video_id")
+    if remixed_from and str(remixed_from).startswith("task_"):
+        remixed_from = _video_id(str(remixed_from))
     return {
-        "id": task.id,
+        "id": _video_id(task.id),
         "object": "video",
         "created_at": int(task.created_at),
         "completed_at": completed_at,
@@ -195,7 +208,7 @@ def _video_view(task: Task, svc: Services) -> dict:
         "progress": task.progress,
         "model": task.request.get("model") or "muse-video",
         "prompt": task.request.get("prompt"),
-        "remixed_from_video_id": task.request.get("remixed_from_video_id"),
+        "remixed_from_video_id": remixed_from,
         "seconds": seconds,
         "size": size,
         "error": error,
@@ -299,7 +312,8 @@ async def list_videos(
     current = getattr(request.state, "key_id", None)
     owner = None if current == "admin" else current
     tasks, has_more = svc.tasks.query(kind="video", owner=owner, limit=limit,
-                                      order=order, after=after)
+                                      order=order,
+                                      after=_task_id(after) if after else None)
     data = [_video_view(task, svc) for task in tasks]
     return {"object": "list", "data": data,
             "first_id": data[0]["id"] if data else None,
@@ -366,7 +380,7 @@ async def remix_video(video_id: str, body: VideoRemixRequest, request: Request,
         request, svc, prompt=body.prompt, model_name=model_name, spec=spec,
         seconds=_parse_seconds(source.request.get("seconds")),
         size=_normalize_size(source.request.get("size")),
-        first_frame=None, remixed_from_video_id=source.id)
+        first_frame=None, remixed_from_video_id=_video_id(source.id))
     return _video_view(task, svc)
 
 
@@ -391,5 +405,5 @@ async def delete_video(video_id: str, request: Request,
     name = str(result.get("name") or str(result.get("url") or "").rsplit("/", 1)[-1])
     if name:
         svc.media.delete(name)
-    svc.tasks.delete(video_id)
+    svc.tasks.delete(_task_id(video_id))
     return {"id": video_id, "object": "video.deleted", "deleted": True}

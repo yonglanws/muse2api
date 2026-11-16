@@ -75,12 +75,17 @@ class RequestLogMiddleware:
         # Route handlers and auth set request.state.*, which lives in this dict.
         state: dict[str, Any] = scope.setdefault("state", {})
         poll = _POLL_RE.match(path) if scope["method"] == "GET" else None
+        poll_task_id = poll.group(1) if poll else None
+        if poll_task_id and poll_task_id.startswith("video_"):
+            # Videos expose Sora-shaped ``video_`` ids; the task store (and the
+            # admin dashboard) keys them as ``task_``.
+            poll_task_id = "task_" + poll_task_id[6:]
         record: dict[str, Any] = {
             "ts": time.time(),
             "method": scope["method"],
             "path": path,
             "poll": int(bool(poll)),
-            "task_id": poll.group(1) if poll else None,
+            "task_id": poll_task_id,
             "status_code": 500,
             "stream": 0,
             "client_ip": client_ip(scope),

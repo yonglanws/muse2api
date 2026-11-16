@@ -110,8 +110,9 @@ def test_polls_flagged_and_media_skipped(client, auth, admin):
     rows = _requests(client, admin)
     assert [r["path"] for r in rows] == [f"/v1/videos/{task['id']}", "/v1/videos"]
     poll, submit = rows
-    assert poll["poll"] is True and poll["task_id"] == task["id"]
-    assert submit["poll"] is False and submit["task_id"] == task["id"]
+    internal_id = "task_" + task["id"].removeprefix("video_")
+    assert poll["poll"] is True and poll["task_id"] == internal_id
+    assert submit["poll"] is False and submit["task_id"] == internal_id
     assert submit["model"] == "muse-video"
     assert [r["path"] for r in _requests(client, admin, hide_polls="true")] == ["/v1/videos"]
 
@@ -247,12 +248,14 @@ def test_failed_task_counts_as_error(client, auth, admin, monkeypatch):
             break
         time.sleep(0.01)
     # Both submits answered 200; only the task outcome tells them apart.
-    assert rows[ok["id"]]["status_code"] == rows[bad["id"]]["status_code"] == 200
-    assert rows[ok["id"]]["task_status"] == "succeeded"
-    assert rows[bad["id"]]["task_status"] == "failed"
-    assert rows[bad["id"]]["error"] == "video generation timed out"
-    assert rows[bad["id"]]["task_ms"] >= 0
-    assert [r["task_id"] for r in _requests(client, admin, status="failed")] == [bad["id"]]
+    ok_id = "task_" + ok["id"].removeprefix("video_")
+    bad_id = "task_" + bad["id"].removeprefix("video_")
+    assert rows[ok_id]["status_code"] == rows[bad_id]["status_code"] == 200
+    assert rows[ok_id]["task_status"] == "succeeded"
+    assert rows[bad_id]["task_status"] == "failed"
+    assert rows[bad_id]["error"] == "video generation timed out"
+    assert rows[bad_id]["task_ms"] >= 0
+    assert [r["task_id"] for r in _requests(client, admin, status="failed")] == [bad_id]
 
     s = client.get("/admin/stats", headers=admin, params={"window": "1h"}).json()
     assert s["total"] == 2 and s["errors"] == 1 and s["server_errors"] == 0

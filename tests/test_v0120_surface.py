@@ -4,6 +4,7 @@ metadata, and explicit rejections for upstream-inexpressible parameters."""
 from __future__ import annotations
 
 import json
+import time
 
 from test_robustness import StubDriver, _auth, _stub_client
 from test_web_chat_surface import _mock_client
@@ -213,3 +214,31 @@ def test_models_expose_shutdown_date_and_reject_delete(tmp_path):
     model_id = listing["data"][0]["id"]
     assert client.delete(f"/v1/models/{model_id}",
                          headers=_auth()).status_code == 405
+
+
+# --- Videos ----------------------------------------------------------------
+
+def test_video_ids_use_sora_prefix(tmp_path):
+    client = _mock_client(tmp_path)
+    created = client.post("/v1/videos", headers=_auth(), json={
+        "prompt": "a paper boat", "seconds": "4"}).json()
+    assert created["id"].startswith("video_")
+    assert created["object"] == "video"
+
+    status = created["status"]
+    for _ in range(100):
+        body = client.get(f"/v1/videos/{created['id']}", headers=_auth()).json()
+        status = body["status"]
+        if status in ("completed", "failed"):
+            break
+        time.sleep(0.02)
+    assert status == "completed"
+
+    listed = client.get("/v1/videos", headers=_auth()).json()
+    assert listed["data"][0]["id"] == created["id"]
+    assert client.get(f"/v1/videos/{created['id']}/content",
+                      headers=_auth()).status_code == 200
+    deleted = client.delete(f"/v1/videos/{created['id']}",
+                            headers=_auth()).json()
+    assert deleted == {"id": created["id"], "object": "video.deleted",
+                       "deleted": True}
