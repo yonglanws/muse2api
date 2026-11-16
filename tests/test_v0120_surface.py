@@ -300,6 +300,33 @@ def test_file_expiry_is_pruned_and_bytes_removed(tmp_path):
     assert store.get(entry["id"]) is None
 
 
+def test_expired_file_lookup_removes_backing_bytes(tmp_path):
+    store = FileStore(tmp_path / "files", tmp_path / "files.json")
+    entry = store.create(filename="old.txt", purpose="assistants",
+                         data=b"expired", mime="text/plain")
+    index = json.loads((tmp_path / "files.json").read_text(encoding="utf-8"))
+    backing = tmp_path / "files" / index["files"][entry["id"]]["stored"]
+    store._items[entry["id"]]["expires_at"] = time.time() - 1
+    assert store.get(entry["id"]) is None
+    assert not backing.is_file()
+
+
+def test_file_cursor_keeps_same_timestamp_entries(tmp_path):
+    store = FileStore(tmp_path / "files", tmp_path / "files.json")
+    entries = [store.create(filename=f"{i}.txt", purpose="assistants",
+                            data=b"x", mime="text/plain")
+               for i in range(3)]
+    same_tick = time.time()
+    for entry in entries:
+        store._items[entry["id"]]["created"] = same_tick
+    page = store.list(limit=2, order="desc")
+    assert len(page) == 2
+    tail = store.list(limit=2, order="desc", after=page[-1]["id"])
+    assert len(tail) == 1
+    assert {item["id"] for item in page + tail} == {
+        entry["id"] for entry in entries}
+
+
 # --- Responses stream / input items ---------------------------------------
 
 def test_responses_sse_has_event_lines(tmp_path):

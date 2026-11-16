@@ -315,6 +315,8 @@ def test_legacy_functions_response_shape(tmp_path):
     assert choice["finish_reason"] == "function_call"
     assert choice["message"]["function_call"]["name"] == "get_weather"
     assert "tool_calls" not in choice["message"]
+    # Legacy calls still count as completion tokens.
+    assert r.json()["usage"]["completion_tokens"] > 0
 
 
 def test_parallel_tool_calls_false_keeps_one_call(tmp_path):

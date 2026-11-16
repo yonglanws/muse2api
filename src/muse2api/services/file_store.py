@@ -152,6 +152,7 @@ class FileStore:
             return None
         if not self._fresh(entry, time.time()):
             self._items.pop(file_id, None)
+            self._unlink(entry)
             return None
         if not visible(entry.get("owner"), owner):
             return None
@@ -196,15 +197,22 @@ class FileStore:
         if purpose:
             entries = [e for e in entries if e.get("purpose") == purpose]
         reverse = order != "asc"
-        entries.sort(key=lambda e: e.get("created", 0), reverse=reverse)
+
+        def sort_key(entry: dict[str, Any]) -> tuple[float, str]:
+            # The id breaks ties: several files can be created in the same
+            # clock tick, and a timestamp-only cursor would skip that group.
+            return (float(entry.get("created", 0)),
+                    str(entry.get("id") or ""))
+
+        entries.sort(key=sort_key, reverse=reverse)
         if after:
             cursor = self._items.get(after)
             if cursor is not None and visible(cursor.get("owner"), owner):
-                created = cursor.get("created", 0)
+                cursor_key = sort_key(cursor)
                 if reverse:
-                    entries = [e for e in entries if e.get("created", 0) < created]
+                    entries = [e for e in entries if sort_key(e) < cursor_key]
                 else:
-                    entries = [e for e in entries if e.get("created", 0) > created]
+                    entries = [e for e in entries if sort_key(e) > cursor_key]
         if limit > 0:
             entries = entries[:limit]
         return [self._view(e) for e in entries]

@@ -379,12 +379,15 @@ def _usage(prompt_text: str, completion_text: str) -> dict:
 
 
 def _message_usage_text(message: dict) -> str:
-    """Completion text used for usage: final content or serialized tool calls."""
+    """Completion text used for usage: final content or serialized calls."""
     content = message.get("content")
     if isinstance(content, str):
         return content
     calls = message.get("tool_calls")
-    return json.dumps(calls, ensure_ascii=False) if calls else ""
+    if calls:
+        return json.dumps(calls, ensure_ascii=False)
+    call = message.get("function_call")
+    return json.dumps(call, ensure_ascii=False) if call else ""
 
 
 def _media_suffix(media, svc, base: str) -> str:
@@ -1432,11 +1435,13 @@ def _completion(plan: _Plan, text: str,
     if choices_texts is None:
         message, finish = _message_from_text(plan, text)
         content = message.get("content") or ""
-        suffix = (suffixes or [""])[0]
+        has_calls = bool(message.get("tool_calls") or message.get("function_call"))
+        suffix = "" if has_calls else (suffixes or [""])[0]
         if suffix:
             content += suffix
             message["content"] = content
-        annotations = _chat_annotations(content, (citations or [[]])[0])
+        annotations = (_chat_annotations(content, (citations or [[]])[0])
+                       if content else None)
         message.setdefault("refusal", None)
         message.setdefault("annotations", annotations or [])
         message.setdefault("audio", None)
@@ -1450,12 +1455,16 @@ def _completion(plan: _Plan, text: str,
         for index, one_text in enumerate(choices_texts):
             message, finish = _message_from_text(plan, one_text)
             content = message.get("content") or ""
-            suffix = (suffixes or [])[index] if suffixes and index < len(suffixes) else ""
+            has_calls = bool(message.get("tool_calls") or message.get("function_call"))
+            suffix = ("" if has_calls else
+                      (suffixes or [])[index] if suffixes and index < len(suffixes) else "")
             if suffix:
                 content += suffix
                 message["content"] = content
-            annotations = _chat_annotations(
-                content, citations[index] if citations and index < len(citations) else [])
+            annotations = (
+                _chat_annotations(
+                    content, citations[index] if citations and index < len(citations) else [])
+                if content else None)
             message.setdefault("refusal", None)
             message.setdefault("annotations", annotations or [])
             message.setdefault("audio", None)
