@@ -169,3 +169,14 @@ class KeyUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     note: str | None = Field(default=None, max_length=500)
     revoked: bool | None = None
+
+
+class IdentitySetRequest(BaseModel):
+    """Native persona-tone update for an account (probe 19)."""
+    name: str | None = Field(default=None, min_length=1, max_length=100,
+                             description="Onboarding-only upstream; the default "
+                             "Muse name is kept.")
+    vibe: str | None = Field(
+        default=None, min_length=1, max_length=60,
+        description="Tone persona applied upstream: dry_witty, short_concise "
+        "or warm_friendly.")

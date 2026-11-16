@@ -47,6 +47,10 @@
 | H7 | Sora 形状 `/v1/videos`（multipart/JSON、content、remix、分页、状态机） | P1 | `api/routes/videos.py` | | ✅ 已完成（0.12.0） |
 | H8 | Responses 对象面补齐（completed_at/service_tier/usage details/instructions 语义/取消持久化） | P1 | `api/routes/responses.py` | | ✅ 已完成（0.12.0） |
 | H9 | Files 过期/分页/purpose 校验；Images/Models 字段补齐与不可表达参数 400 | P1 | `api/routes/files.py` · `images.py` · `models.py` | | ✅ 已完成（0.12.0） |
+| I1 | 网页同源信封（model.get 接入 / model+timezone+capabilities / 时间标签通道） | P1 | `drivers/protocol/client.py` · `driver.py` · `config.py` | | ✅ 已完成（0.16.0，probe 18） |
+| I2 | 原生 persona 通道（onboarding.identity.set vibe / identity 读写管理端点） | P1 | `drivers/protocol/client.py` · `api/routes/admin.py` | | ✅ 已完成（0.16.0，probe 19） |
+| I3 | 引用标记归一化（【url_id†L9】→ [n]/删除，流式安全） | P2 | `core/citations.py` · `drivers/protocol/driver.py` | | ✅ 已完成（0.16.0） |
+| I4 | VM 推理配置端点（config.get / config.update 透传） | P2 | `api/routes/admin.py` | | ✅ 已完成（0.16.0） |
 
 ---
 

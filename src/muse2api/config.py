@@ -181,6 +181,30 @@ class Settings(BaseSettings):
         "them from the account VM (0 means no cap).",
     )
 
+    # --- web-chat wire parity (probe 18, 2026-11-17) ---
+    chat_wire_parity: bool = Field(
+        default=True,
+        description="Send the same chat.stream envelope the muse.ai web client "
+        "sends: the account's selected model (model.get), the client timezone "
+        "(drives the server-side time-tag developer message; the value is sticky "
+        "upstream) and the web client's capabilities list.",
+    )
+    timezone: str = Field(
+        default="",
+        description="IANA timezone sent with every chat.stream turn when "
+        "chat_wire_parity is on (for example Asia/Shanghai). Upstream prepends a "
+        "[Day YYYY-MM-DD HH:MM:SS TZ] [client_timezone=...] developer message from "
+        "it and keeps the last valid value per account; empty omits the field so "
+        "the account's own sticky value applies.",
+    )
+    citation_markers: Literal["native", "footnote", "strip"] = Field(
+        default="native",
+        description="What happens to Muse's inline citation markers in replies "
+        "(【url_id†L9】/【post-x】: the web UI renders them as source chips and the "
+        "URLs already travel as annotations). native keeps them, footnote rewrites "
+        "each distinct marker as [1]/[2]/…, strip removes them.",
+    )
+
     # --- account pool ---
     pool_strategy: PoolStrategyName = "affinity"
     pool_acquire_timeout: float = 60.0

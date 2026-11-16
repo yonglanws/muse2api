@@ -54,6 +54,15 @@ CAPABILITIES = [
     "voice_reply_captions",
     "voice_user_live_transcript",
 ]
+# The chat.stream capabilities list is separate and carries the web client's
+# exact feature flags (bundle 21125sd0xkd-l.js, module 459544 export F).
+STREAM_CAPABILITIES = [
+    "hotel_results",
+    "chat_cancel",
+    "delta_stream",
+    "custom_reactions",
+    "custom_reactions_facebook_thumbs_up_v1",
+]
 
 
 @dataclass
@@ -618,17 +627,27 @@ class MuseProtocolClient:
     async def chat_stream(self, session_id: str, items: list[dict[str, Any]], *,
                           node_id: str | None = None,
                           hidden_prompt: str | None = None,
-                          metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+                          metadata: dict[str, Any] | None = None,
+                          model_id: str | None = None,
+                          timezone: str | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {
             "items": items,
             "node_id": node_id or self.node_id,
-            "capabilities": {},
+            "capabilities": STREAM_CAPABILITIES,
             "session_id": session_id,
         }
         if hidden_prompt:
             body["hidden_prompt"] = hidden_prompt
         if metadata:
             body["metadata"] = metadata
+        if model_id:
+            # The web client sends the pinned model while the account's
+            # model_identity_visibility is "visible" (probe 18: auto/auto).
+            body["model"] = model_id
+        if timezone:
+            # Upstream turns this into the per-turn [Day … TZ]
+            # [client_timezone=…] developer message; the value is sticky.
+            body["timezone"] = timezone
         self._mark("stream_start")
         response = await self.request("POST", "/chat/stream", body, 60)
         if response.status != 200:
@@ -638,6 +657,91 @@ class MuseProtocolClient:
         except ValueError:
             ack = {}
         return ack if isinstance(ack, dict) else {}
+
+    # ------------------------------------------------- identity / vm config
+    async def get_model(self) -> dict[str, Any] | None:
+        """Account model state: selected_model, available_models, visibility.
+
+        Web parity surface (noise ``model.get``); ``None`` when the endpoint is
+        unavailable so callers can fall back to plain sends."""
+        try:
+            response = await self.request("GET", "/model", None, 20)
+        except Exception:  # noqa: BLE001 - optional surface
+            return None
+        if response.status != 200:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        result = body.get("result") if isinstance(body, dict) else None
+        return result if isinstance(result, dict) else None
+
+    async def identity_get(self) -> dict[str, Any] | None:
+        """Parsed account identity (name/vibe/emoji, from IDENTITY.md)."""
+        try:
+            response = await self.request("GET", "/identity", None, 20)
+        except Exception:  # noqa: BLE001 - optional surface
+            return None
+        if response.status != 200:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        result = body.get("result") if isinstance(body, dict) else None
+        return result if isinstance(result, dict) else None
+
+    async def identity_set(self, *, name: str | None = None,
+                           vibe: str | None = None) -> dict[str, Any]:
+        """Native identity write (``onboarding.identity.set``).
+
+        Upstream applies ``vibe`` (dry_witty / short_concise / warm_friendly)
+        by appending a ``- **Vibe:** …`` line to IDENTITY.md — probed 19c to
+        propagate to fresh threads immediately. ``name`` is only honored
+        during onboarding; the default Muse name is kept.
+        """
+        body: dict[str, Any] = {}
+        if name:
+            body["name"] = name
+        if vibe:
+            body["vibe"] = vibe
+        response = await self.request("POST", "/onboarding/identity", body, 20)
+        if response.status != 200:
+            raise UpstreamError(
+                f"/onboarding/identity returned HTTP {response.status}")
+        try:
+            payload = response.json()
+        except ValueError:
+            return {}
+        return payload.get("result") if isinstance(payload, dict) else {}
+
+    async def vm_config_get(self) -> dict[str, Any] | None:
+        """VM agent config (llm.reasoning.* effort), noise ``config.get``."""
+        try:
+            response = await self.request("GET", "/config", None, 20)
+        except Exception:  # noqa: BLE001 - optional surface
+            return None
+        if response.status != 200:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        result = body.get("result") if isinstance(body, dict) else None
+        return result if isinstance(result, dict) else None
+
+    async def vm_config_patch(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """Update the VM agent config (noise ``config.update``)."""
+        response = await self.request("PATCH", "/config", patch, 20)
+        if response.status != 200:
+            raise UpstreamError(f"/config returned HTTP {response.status}")
+        try:
+            body = response.json()
+        except ValueError:
+            return {}
+        result = body.get("result") if isinstance(body, dict) else None
+        return result if isinstance(result, dict) else {}
 
     async def cancel(self, session_id: str, message_id: str | None = None) -> bool:
         body: dict[str, Any] = {"session_id": session_id}

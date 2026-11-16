@@ -23,7 +23,14 @@ from ...errors import FeatureNotImplemented, InvalidRequest, Muse2APIError, NotF
 from ...services.container import Services
 from ...upstream.muse import missing_session_cookies
 from ..deps import get_services, require_admin_key
-from ..schemas import AccountCreate, AccountsImportRequest, AccountUpdate, KeyCreate, KeyUpdate
+from ..schemas import (
+    AccountCreate,
+    AccountsImportRequest,
+    AccountUpdate,
+    IdentitySetRequest,
+    KeyCreate,
+    KeyUpdate,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_key)])
 
@@ -217,6 +224,64 @@ async def harness_restore(account_id: str, svc: Services = Depends(get_services)
     _get(svc, account_id)
     restored = await restore(account_id)
     return {"account_id": account_id, "restored": restored}
+
+
+@router.get("/identity/{account_id}")
+async def identity_get(account_id: str, svc: Services = Depends(get_services)) -> dict:
+    """The account's native Muse identity (probe 19: parsed from IDENTITY.md
+    live — ``name``, ``vibe``, ``emoji``; ``name_set`` false means the default)."""
+    identity = getattr(svc.driver, "identity_get", None)
+    if identity is None:
+        raise FeatureNotImplemented("identity needs the protocol driver")
+    account = _get(svc, account_id)
+    result = await identity(account)
+    return {"account_id": account_id, "supported": result is not None,
+            "identity": result}
+
+
+@router.post("/identity/{account_id}")
+async def identity_set(account_id: str, body: IdentitySetRequest,
+                       svc: Services = Depends(get_services)) -> dict:
+    """Native persona-tone channel (``onboarding.identity.set``).
+
+    ``vibe`` applies upstream (dry_witty / short_concise / warm_friendly): a
+    ``- **Vibe:** …`` line lands in IDENTITY.md and the agent's tone in NEW
+    conversations follows it immediately. ``name`` is onboarding-only —
+    upstream keeps the default Muse name (probed 19c)."""
+    setter = getattr(svc.driver, "identity_set", None)
+    if setter is None:
+        raise FeatureNotImplemented("identity set needs the protocol driver")
+    account = _get(svc, account_id)
+    result = await setter(account, name=body.name, vibe=body.vibe)
+    return {"account_id": account_id, "result": result,
+            "identity": await svc.driver.identity_get(account)}
+
+
+@router.get("/vm-config/{account_id}")
+async def vm_config_get(account_id: str, svc: Services = Depends(get_services)) -> dict:
+    """The account VM's agent config (``llm.reasoning.root_agent/subagent.effort``)."""
+    getter = getattr(svc.driver, "vm_config_get", None)
+    if getter is None:
+        raise FeatureNotImplemented("vm-config needs the protocol driver")
+    account = _get(svc, account_id)
+    result = await getter(account)
+    return {"account_id": account_id, "supported": result is not None,
+            "config": result}
+
+
+@router.patch("/vm-config/{account_id}")
+async def vm_config_patch(account_id: str, body: dict,
+                          svc: Services = Depends(get_services)) -> dict:
+    """Update the account VM's agent config, e.g.
+    ``{"llm": {"reasoning": {"root_agent": {"effort": "medium"}}}}``."""
+    patcher = getattr(svc.driver, "vm_config_patch", None)
+    if patcher is None:
+        raise FeatureNotImplemented("vm-config needs the protocol driver")
+    if not isinstance(body, dict) or not body:
+        raise InvalidRequest("a non-empty JSON patch body is required")
+    account = _get(svc, account_id)
+    result = await patcher(account, body)
+    return {"account_id": account_id, "config": result}
 
 
 @router.get("/extension.zip")

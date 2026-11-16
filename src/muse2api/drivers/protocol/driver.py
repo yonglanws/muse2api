@@ -24,6 +24,7 @@ from typing import Any
 
 from ...accounts.model import Account
 from ...config import Settings
+from ...core.citations import MarkerFilter
 from ...core.prompt import followup_text, same_history_prefix
 from ...errors import UpstreamError, UpstreamRefused, UpstreamTimeout
 from ...upstream import muse
@@ -138,6 +139,10 @@ class _Conn:
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     inflight: int = 0
     last_used: float = 0.0
+    # Account model state from noise model.get (web parity, probe 18): the
+    # selected model rides every chat.stream while its identity visibility is
+    # "visible". None when the endpoint is unavailable.
+    model_info: dict[str, Any] | None = None
 
 
 @dataclass
@@ -319,6 +324,15 @@ class ProtocolDriver(MuseDriver):
                 await self._ensure_harness(account, state, client)
             except Exception as exc:  # noqa: BLE001 - policy is best-effort
                 log.warning("harness policy failed for account %s: %s", account.id, exc)
+        if self.settings.chat_wire_parity:
+            try:
+                conn.model_info = await client.get_model()
+                if conn.model_info:
+                    log.info("model.get for %s: selected=%s visibility=%s",
+                             account.id, conn.model_info.get("selected_model"),
+                             conn.model_info.get("model_identity_visibility"))
+            except Exception as exc:  # noqa: BLE001 - parity is best-effort
+                log.debug("model.get failed for %s: %s", account.id, exc)
         return client
 
     async def _acquire_conn(self, account: Account, state: _AccountState,
@@ -373,6 +387,45 @@ class ProtocolDriver(MuseDriver):
             restored = await state.harness.restore(client)
         log.info("harness restored for %s: %s", account_id, restored)
         return restored
+
+    # ------------------------------------------- identity / vm config admin
+    async def _account_client(self, account: Account,
+                              state: _AccountState) -> MuseProtocolClient:
+        for conn in state.conns:
+            if conn.client is not None and conn.client.alive:
+                return conn.client
+        conn = await self._acquire_conn(account, state, None)
+        try:
+            client = conn.client
+            assert client is not None
+            return client
+        finally:
+            self._release_conn(conn)
+
+    async def identity_get(self, account: Account) -> dict[str, Any] | None:
+        """Parsed account identity (name/vibe/emoji — probe 19: live IDENTITY.md
+        parse, ``vibe``/``tagline`` come from the file's ``- **Vibe:**`` line)."""
+        client = await self._account_client(account, self._state(account.id))
+        return await client.identity_get()
+
+    async def identity_set(self, account: Account, *, name: str | None = None,
+                           vibe: str | None = None) -> dict[str, Any]:
+        """Native persona-tone write. ``vibe`` applies (dry_witty /
+        short_concise / warm_friendly); ``name`` is onboarding-only upstream."""
+        client = await self._account_client(account, self._state(account.id))
+        result = await client.identity_set(name=name, vibe=vibe)
+        log.info("identity set for %s: name=%s vibe=%s", account.id, name, vibe)
+        return result
+
+    async def vm_config_get(self, account: Account) -> dict[str, Any] | None:
+        """VM agent config (``llm.reasoning.root_agent/subagent.effort``)."""
+        client = await self._account_client(account, self._state(account.id))
+        return await client.vm_config_get()
+
+    async def vm_config_patch(self, account: Account,
+                              patch: dict[str, Any]) -> dict[str, Any]:
+        client = await self._account_client(account, self._state(account.id))
+        return await client.vm_config_patch(patch)
 
     # ------------------------------------------------------------ threads
     def _new_thread(self) -> _Thread:
@@ -536,8 +589,18 @@ class ProtocolDriver(MuseDriver):
                 completed = False
                 try:
                     items = await self._items(client, prompt, images)
+                    stream_kwargs: dict[str, Any] = {}
+                    if self.settings.chat_wire_parity:
+                        model_info = conn.model_info or {}
+                        if (str(model_info.get("model_identity_visibility") or "")
+                                == "visible"):
+                            selected = str(model_info.get("selected_model") or "")
+                            if selected:
+                                stream_kwargs["model_id"] = selected
+                        if self.settings.timezone:
+                            stream_kwargs["timezone"] = self.settings.timezone
                     ack = await client.chat_stream(
-                        thread.session_id, items, node_id=node_id)
+                        thread.session_id, items, node_id=node_id, **stream_kwargs)
                     turn_started = True
                     session_id = str(ack.get("session_id") or thread.session_id)
                     if session_id != thread.session_id:
@@ -636,6 +699,11 @@ class ProtocolDriver(MuseDriver):
         started = time.monotonic()
         assistant_ids: set[str] = set()
         got_text = False
+        # Inline citation markers (【url_id†L9】) are web-UI artifacts; the
+        # annotations already carry the URLs. The filter is streaming-safe:
+        # markers may arrive split across deltas.
+        marker_filter = (MarkerFilter(self.settings.citation_markers)
+                         if self.settings.citation_markers != "native" else None)
         while True:
             if cancel is not None and cancel.is_set():
                 await client.cancel(session_id)
@@ -663,8 +731,11 @@ class ProtocolDriver(MuseDriver):
                         text = str(payload.get("text") or "")
                         if text:
                             got_text = True
-                            outcome.text += text
-                            yield "text", text
+                            if marker_filter is not None:
+                                text = marker_filter.feed(text)
+                            if text:
+                                outcome.text += text
+                                yield "text", text
                 elif name == "client.invoke":
                     self._handle_invoke(client, payload, outcome, tool_commands)
                 elif name in ("delta.presentation", "delta.tool_done", "delta.placeholder"):
@@ -698,9 +769,16 @@ class ProtocolDriver(MuseDriver):
                 raise UpstreamTimeout("Muse generation timed out")
             if not assistant_ids and not got_text and elapsed > first_token_timeout:
                 raise UpstreamTimeout("no first token from Muse")
+        if marker_filter is not None:
+            tail = marker_filter.flush()
+            if tail:
+                outcome.text += tail
+                yield "text", tail
         if not got_text:
             text = self._transcript_text(outcome.done)
             if text:
+                if marker_filter is not None:
+                    text = marker_filter.feed(text) + marker_filter.flush()
                 outcome.text = text
                 yield "text", text
 
