@@ -91,7 +91,7 @@ def test_responses_object_has_current_fields(tmp_path):
     assert rejected.json()["error"]["param"] == "top_logprobs"
 
 
-def test_responses_rejects_background_and_conversation(tmp_path):
+def test_responses_rejects_background_and_unknown_conversation(tmp_path):
     client = _stub_client(tmp_path, StubDriver("hi"))
     background = client.post("/v1/responses", headers=_auth(), json={
         "input": "hello", "background": True})
@@ -100,7 +100,7 @@ def test_responses_rejects_background_and_conversation(tmp_path):
 
     conversation = client.post("/v1/responses", headers=_auth(), json={
         "input": "hello", "conversation": "conv_123"})
-    assert conversation.status_code == 400
+    assert conversation.status_code == 404
     assert conversation.json()["error"]["param"] == "conversation"
 
 

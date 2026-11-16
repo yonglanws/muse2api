@@ -230,6 +230,10 @@ class Settings(BaseSettings):
         return self.data_dir / "responses.json"
 
     @property
+    def conversations_file(self) -> Path:
+        return self.data_dir / "conversations.json"
+
+    @property
     def chat_completions_file(self) -> Path:
         return self.data_dir / "chat_completions.json"
 

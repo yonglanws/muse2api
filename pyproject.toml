@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muse2api"
-version = "0.13.1"
+version = "0.14.0"
 description = "muse.ai 网页版的反向代理网关：OpenAI 兼容 API、系统提示词与工具调用"
 readme = "README.md"
 license = { text = "MIT" }

@@ -154,6 +154,35 @@ client.chat.completions.delete(resp.id)
 `order`（`asc` 默认）；列表响应带 `first_id` / `last_id` / `has_more`。默认不存储，只有显式
 `store: true` 才写入 `data/chat_completions.json`（TTL `MUSE2API_CHAT_STORE_TTL`，默认 30 天）。
 
+## Conversations（0.14.0）
+
+官方 SDK 的 Conversations 资源可直接使用；Responses 传 `conversation=` 时会自动读取历史
+items、追加本轮输入与输出：
+
+```python
+conv = client.conversations.create(
+    metadata={"trace": "demo"},
+    items=[{"role": "user", "content": "记住暗号 XYZZY"}])
+client.conversations.retrieve(conv.id)
+client.conversations.update(conv.id, metadata={"trace": "renamed"})
+page = client.conversations.items.list(conv.id, order="desc", limit=20)
+created = client.conversations.items.create(
+    conv.id, items=[{"role": "user", "content": "暗号是什么？"}])
+item = client.conversations.items.retrieve(
+    created.data[0].id, conversation_id=conv.id)
+client.conversations.items.delete(
+    created.data[0].id, conversation_id=conv.id)
+client.conversations.delete(conv.id)
+
+resp = client.responses.create(
+    model="muse-chat", input="继续", conversation=conv.id)
+```
+
+Conversation 与 `previous_response_id` 不能同时使用（400）。items 支持
+`message` / `function_call` / `function_call_output`，并自动补齐 `id`、`status`；
+`item_reference` 会在展开为模型输入时解析到同一会话里的目标 item。数据落在
+`data/conversations.json`，按 API Key 隔离。
+
 ## 视频（Sora 形状，0.12.0）
 
 ```python

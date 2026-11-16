@@ -117,6 +117,51 @@ async def test_sdk_uploads_roundtrip(client, auth):
         await http_client.aclose()
 
 
+async def test_sdk_conversations_roundtrip(client, auth):
+    """Conversation CRUD, items, and Responses conversation= must all validate."""
+    token = auth["Authorization"].split(" ", 1)[1]
+    sdk, http_client = _sdk_client(client, token)
+    try:
+        conversation = await sdk.conversations.create(
+            metadata={"trace": "sdk"},
+            items=[{"role": "user", "content": "hello"}])
+        assert conversation.object == "conversation"
+        assert conversation.metadata == {"trace": "sdk"}
+        assert (await sdk.conversations.retrieve(
+            conversation.id)).id == conversation.id
+        updated = await sdk.conversations.update(
+            conversation.id, metadata={"trace": "sdk2"})
+        assert updated.metadata == {"trace": "sdk2"}
+
+        page = await sdk.conversations.items.list(conversation.id, limit=10)
+        assert page.object == "list"
+        assert len(page.data) == 1
+        assert page.data[0].type == "message"
+        assert page.data[0].content[0].type == "input_text"
+
+        created = await sdk.conversations.items.create(
+            conversation.id,
+            items=[{"role": "assistant", "content": "hello back"}])
+        item = created.data[0]
+        assert item.content[0].type == "output_text"
+        fetched = await sdk.conversations.items.retrieve(
+            item.id, conversation_id=conversation.id)
+        assert fetched.id == item.id
+        deleted_item = await sdk.conversations.items.delete(
+            item.id, conversation_id=conversation.id)
+        assert deleted_item.object == "conversation"
+
+        response = await sdk.responses.create(
+            model="muse-chat", input="sdk conversation turn",
+            conversation=conversation.id)
+        assert response.status == "completed"
+        assert response.conversation.id == conversation.id
+
+        await sdk.conversations.delete(conversation.id)
+    finally:
+        await http_client.aclose()
+
+
 async def test_sdk_videos_roundtrip(client, auth):
     """The official videos client always sends multipart; it must poll to
     ``completed``, list, download, remix and delete against our task store."""

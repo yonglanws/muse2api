@@ -73,6 +73,19 @@ class UploadCompleteRequest(_Lenient):
     md5: str | None = None
 
 
+class ConversationCreateRequest(_Lenient):
+    items: list[dict[str, Any]] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class ConversationUpdateRequest(_Lenient):
+    metadata: dict[str, Any] | None = None
+
+
+class ConversationItemsRequest(_Lenient):
+    items: list[dict[str, Any]] = Field(min_length=1)
+
+
 class ImageGenerationRequest(_Lenient):
     prompt: str = Field(min_length=1)
     model: str | None = None

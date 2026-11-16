@@ -104,6 +104,7 @@
 | 0.12.2 | legacy function_call 计入 completion usage；过期文件按 id 查询也回收字节；同时间戳 Files 分页不丢条目 |
 | 0.13.0 | OpenAI Uploads 分片上传（64 MiB/片，完成后生成 Files 对象）；图片 output_format/output_compression 本地转码 |
 | 0.13.1 | 生产镜像内置 `[matting]` extra（rembg + pymatting），预下载 BiRefNet-lite；`background=transparent` 真正返回 RGBA PNG |
+| 0.14.0 | OpenAI Conversations API（CRUD + items 分页）；Responses `conversation` 自动前置历史并在完成后追加本轮 |
 
 详细记录：
 

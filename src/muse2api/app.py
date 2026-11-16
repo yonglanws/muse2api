@@ -63,6 +63,7 @@ def create_app(settings: Settings | None = None, driver: MuseDriver | None = Non
         await services.pool.load()
         await services.tasks.load()
         services.responses.load()
+        services.conversations.load()
         services.completions.load()
         services.files.load()
         services.uploads.load()

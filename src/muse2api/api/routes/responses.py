@@ -48,6 +48,7 @@ from ...core.tokens import count_tokens, truncate_tokens
 from ...drivers.base import ChatRequest, InputImage
 from ...errors import InvalidRequest, Muse2APIError, NotFound
 from ...services.container import Services
+from ...services.conversation_store import items_to_messages, messages_to_items
 from ..deps import conversation_key, get_services, public_base, require_api_key
 from ..schemas import ChatCompletionRequest, ChatMessage
 from .chat import (
@@ -65,6 +66,18 @@ router = APIRouter(tags=["responses"], dependencies=[Depends(require_api_key)])
 
 def _approx_tokens(text: str) -> int:
     return count_tokens(text)
+
+
+def _conversation_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        return str(value.get("id") or "").strip() or None
+    raise InvalidRequest(
+        "conversation must be an id or an object with an 'id'",
+        param="conversation")
 
 
 def _sse(payload: dict | str) -> bytes:
@@ -573,10 +586,6 @@ async def create_response(body: ResponseRequest, request: Request,
             "background responses are not supported by this gateway; "
             "use a normal request and poll GET /v1/responses/{id}",
             param="background")
-    if body.conversation is not None:
-        raise InvalidRequest(
-            "conversations are not supported; continue a reply with "
-            "previous_response_id", param="conversation")
     if body.prompt is not None:
         raise InvalidRequest(
             "prompt templates are not supported; inline the prompt text in "
@@ -599,6 +608,23 @@ async def create_response(body: ResponseRequest, request: Request,
     input_source = own_messages
     if body.instructions:
         input_source = _to_messages(body.model_copy(update={"instructions": None}))
+    conversation_id = _conversation_id(body.conversation)
+    if body.conversation is not None:
+        if body.previous_response_id:
+            raise InvalidRequest(
+                "conversation cannot be combined with previous_response_id",
+                param="conversation")
+        if not conversation_id:
+            raise InvalidRequest(
+                "conversation must be an id or an object with an 'id'",
+                param="conversation")
+        conversation_entry = svc.conversations.entry(conversation_id, owner)
+        if conversation_entry is None:
+            raise NotFound(
+                f"No conversation found with id '{conversation_id}'.",
+                param="conversation", code="conversation_not_found")
+        own_messages = (items_to_messages(conversation_entry.get("items") or [])
+                        + own_messages)
     chain_hint = None
     if body.previous_response_id:
         entry = svc.responses.get(body.previous_response_id, owner)
@@ -671,11 +697,8 @@ async def create_response(body: ResponseRequest, request: Request,
     buffered = bool(plan.tools) or bool(plan.json_directive)
     input_text = plan.prompt
     base = public_base(request)
-    conversation = None
-    if isinstance(body.conversation, str):
-        conversation = {"id": body.conversation}
-    elif isinstance(body.conversation, dict):
-        conversation = body.conversation
+    conversation = (svc.conversations.get(conversation_id, owner)
+                    if conversation_id else None)
     echo = dict(metadata=body.metadata, user=body.user,
                 parallel_tool_calls=body.parallel_tool_calls,
                 tool_choice=body.tool_choice, reasoning=body.reasoning,
@@ -687,8 +710,24 @@ async def create_response(body: ResponseRequest, request: Request,
                 safety_identifier=body.safety_identifier,
                 prompt_cache_key=body.prompt_cache_key)
 
+    conversation_recorded = False
+
     def save_chain(final_message: dict, response: dict | None = None) -> None:
         """Record this response's chat messages so later calls can continue it."""
+        nonlocal conversation_recorded
+        if (conversation_id and not conversation_recorded
+                and not cancel.is_set()):
+            status = (response or {}).get("status")
+            if status in ("completed", "incomplete"):
+                try:
+                    new_items = (messages_to_items(input_source)
+                                 + messages_to_items([final_message]))
+                    if svc.conversations.add_items(
+                            conversation_id, new_items, owner) is not None:
+                        conversation_recorded = True
+                except Exception:  # noqa: BLE001 - conversation must not lose the reply
+                    log.exception("failed to append to conversation %s",
+                                  conversation_id)
         if body.store:
             if cancel.is_set():
                 # cancel_response already persisted the cancelled object; a
@@ -1111,6 +1150,22 @@ async def count_input_tokens(body: ResponseRequest, request: Request,
     """Count the input tokens a create call would use, without generating."""
     owner = getattr(request.state, "key_id", None)
     messages = _to_messages(body)
+    if body.conversation is not None:
+        if body.previous_response_id:
+            raise InvalidRequest(
+                "conversation cannot be combined with previous_response_id",
+                param="conversation")
+        conversation_id = _conversation_id(body.conversation)
+        if not conversation_id:
+            raise InvalidRequest(
+                "conversation must be an id or an object with an 'id'",
+                param="conversation")
+        conversation = svc.conversations.entry(conversation_id, owner)
+        if conversation is None:
+            raise NotFound(
+                f"No conversation found with id '{conversation_id}'.",
+                param="conversation", code="conversation_not_found")
+        messages = items_to_messages(conversation.get("items") or []) + messages
     if body.previous_response_id:
         entry = svc.responses.get(body.previous_response_id, owner)
         if entry is None:

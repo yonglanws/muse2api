@@ -13,6 +13,7 @@ from ..core.media import MediaStore
 from ..drivers.base import MuseDriver
 from ..drivers.registry import create_driver
 from .chat_store import ChatCompletionStore
+from .conversation_store import ConversationStore
 from .file_store import FileStore
 from .gateway import Gateway
 from .request_log import RequestLog, current_record
@@ -29,6 +30,7 @@ class Services:
     gateway: Gateway
     tasks: TaskManager
     responses: ResponseStore
+    conversations: ConversationStore
     completions: ChatCompletionStore
     media: MediaStore
     files: FileStore
@@ -66,6 +68,7 @@ class Services:
             gateway=Gateway(pool, driver, max_failover=settings.max_failover),
             tasks=TaskManager(settings.tasks_file, on_finish=record_outcome),
             responses=ResponseStore(settings.responses_file, ttl_seconds=settings.response_ttl),
+            conversations=ConversationStore(settings.conversations_file),
             completions=ChatCompletionStore(settings.chat_completions_file,
                                             ttl_seconds=settings.chat_store_ttl),
             media=MediaStore(settings.media_dir),
