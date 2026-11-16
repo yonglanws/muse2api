@@ -23,7 +23,7 @@ async def test_sdk_responses_non_streaming(client, auth):
     token = auth["Authorization"].split(" ", 1)[1]
     sdk, http_client = _sdk_client(client, token)
     try:
-        resp = await sdk.responses.create(model="gpt-4o", input="sdk non-stream hello")
+        resp = await sdk.responses.create(model="muse-chat", input="sdk non-stream hello")
         assert resp.object == "response"
         assert resp.status == "completed"
         assert "sdk non-stream hello" in resp.output_text
@@ -56,7 +56,7 @@ async def test_sdk_responses_streaming(client, auth):
     token = auth["Authorization"].split(" ", 1)[1]
     sdk, http_client = _sdk_client(client, token)
     try:
-        async with sdk.responses.stream(model="gpt-4o", input="sdk stream hello") as stream:
+        async with sdk.responses.stream(model="muse-chat", input="sdk stream hello") as stream:
             async for _event in stream:
                 pass
             final = await stream.get_final_response()

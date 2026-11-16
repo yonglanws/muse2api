@@ -1,4 +1,4 @@
-"""Model registry: public model ids exposed on /v1/models and alias resolution."""
+"""Model registry: the only model ids this gateway exposes and accepts."""
 
 from __future__ import annotations
 
@@ -27,29 +27,6 @@ MODELS: dict[str, ModelSpec] = {
     )
 }
 
-# Popular client-side model names are routed to the closest muse model so that
-# existing OpenAI tooling works without reconfiguration.
-ALIASES: dict[str, str] = {
-    "gpt-4o": "muse-chat",
-    "gpt-4o-mini": "muse-chat",
-    "gpt-4.1": "muse-chat",
-    "gpt-4.1-mini": "muse-chat",
-    "gpt-4.1-nano": "muse-chat",
-    "gpt-4": "muse-chat",
-    "gpt-4-turbo": "muse-chat",
-    "gpt-3.5-turbo": "muse-chat",
-    "gpt-5": "muse-chat",
-    "o1": "muse-chat",
-    "o3-mini": "muse-chat",
-    "o4-mini": "muse-chat",
-    "claude-sonnet-4": "muse-chat",
-    "deepseek-chat": "muse-chat",
-    "dall-e-2": "muse-image",
-    "dall-e-3": "muse-image",
-    "gpt-image-1": "muse-image",
-    "sora": "muse-video",
-}
-
 DEFAULT_BY_KIND: dict[ModelKind, str] = {
     "chat": "muse-chat",
     "image": "muse-image",
@@ -60,13 +37,13 @@ DEFAULT_BY_KIND: dict[ModelKind, str] = {
 def resolve_model(name: str | None, kind: ModelKind) -> ModelSpec:
     """Resolve a client-supplied model name to a ``ModelSpec`` of the expected kind.
 
-    Unknown names raise ``model_not_found`` like the real API; a known model of the
-    wrong kind is rejected so that e.g. ``muse-video`` is never silently used for chat.
+    Only the gateway's own muse models are accepted. Any other vendor or alias name
+    raises ``model_not_found``; a known model of the wrong kind is rejected so that
+    e.g. ``muse-video`` is never silently used for chat.
     """
     if not name:
         return MODELS[DEFAULT_BY_KIND[kind]]
-    key = ALIASES.get(name, name)
-    spec = MODELS.get(key)
+    spec = MODELS.get(name)
     if spec is None:
         raise NotFound(
             f"The model '{name}' does not exist or you do not have access to it.",

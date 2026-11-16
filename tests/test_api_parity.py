@@ -239,19 +239,6 @@ def test_unknown_model_is_rejected_like_the_real_api(tmp_path):
     assert "'definitely-missing'" in body["message"]
 
 
-def test_new_aliases_resolve(tmp_path):
-    driver = StubDriver("hi")
-    client = _stub_client(tmp_path, driver)
-    r = client.post("/v1/chat/completions", headers=_auth(),
-                    json={"model": "gpt-3.5-turbo",
-                          "messages": [{"role": "user", "content": "hi"}]})
-    assert r.status_code == 200
-    r = client.post("/v1/chat/completions", headers=_auth(),
-                    json={"model": "o4-mini",
-                          "messages": [{"role": "user", "content": "hi"}]})
-    assert r.status_code == 200
-
-
 # --- E9: unsupported modalities are rejected, not dropped ---------------------
 
 def test_audio_part_becomes_an_attachment(tmp_path):

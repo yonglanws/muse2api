@@ -30,7 +30,7 @@ flowchart TB
 
     subgraph core["core/ — 与上游无关"]
         direction TB
-        core_models["models.py<br/>模型注册 · 别名"]
+        core_models["models.py<br/>模型注册与校验"]
         core_prompt["prompt.py<br/>messages → prompt"]
         core_media["media.py · matting.py<br/>媒体存储 · 抠图"]
         core_compat["system_prompt.py · tool_plan.py<br/>system 提示词与工具调用"]
@@ -57,7 +57,7 @@ flowchart TB
 
 ## 一次聊天请求的生命周期
 
-1. `routes/chat.py` 校验请求，`resolve_model` 解析模型别名，`flatten_messages` 把多轮对话合并成一条提示词并提取图片。
+1. `routes/chat.py` 校验请求，`resolve_model` 校验模型名，`flatten_messages` 把多轮对话合并成一条提示词并提取图片。
 2. 如果请求带 `system` / `developer` 消息，`core/system_prompt.py` 会把它们整理成前置指令块，并生成指令指纹。
 3. `Gateway.chat_stream` 通过 `AccountPool.lease()` 租用一个账号（受调度策略和单账号并发限制约束，默认每账号 12 并发）。
 4. 调用 `driver.chat_stream(account, ChatRequest)`，接收文本增量。

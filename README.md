@@ -74,7 +74,7 @@ curl http://localhost:18610/admin/accounts \
 |---|---|
 | API Base | `http://<网关地址>:18610/v1` |
 | API Key | `MUSE2API_API_KEY`，或控制台创建的 `m2a-...` 密钥 |
-| 模型 | `muse-chat`、`muse-image`、`muse-video`；`gpt-4o` 等常见名称仅作兼容别名，不出现在 `/v1/models` |
+| 模型 | `muse-chat`、`muse-image`、`muse-video`（其他模型名一律拒绝） |
 | 超时 | 建议 ≥ 240 秒（muse.ai 冷启动较慢） |
 
 ```python
@@ -119,7 +119,7 @@ muse.ai 网页 Agent  ──  系统指令 · 线程 · 客户端工具  ── 
 
 一次聊天请求会经历这些步骤：
 
-1. 路由解析模型别名，把多轮 `messages` 与 `system` 指令整理成一条提示词；
+1. 路由校验模型名，把多轮 `messages` 与 `system` 指令整理成一条提示词；
 2. 网关从账号池租一个账号，驱动建立或复用 muse.ai 线程；
 3. 上游的 `delta.text_append` 直接变成 OpenAI `delta.content`；
 4. 出错时按类型更新账号状态，在尚未向客户端发送内容前自动换号重试；

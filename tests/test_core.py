@@ -55,8 +55,7 @@ def test_thread_url_ignores_the_new_thread_page():
 
 
 def test_resolve_model():
-    assert resolve_model("gpt-4o", "chat").id == "muse-chat"
-    assert resolve_model("gpt-3.5-turbo", "chat").id == "muse-chat"
+    assert resolve_model("muse-chat", "chat").id == "muse-chat"
     assert resolve_model(None, "video").id == "muse-video"
     with pytest.raises(InvalidRequest):
         resolve_model("muse-image", "chat")

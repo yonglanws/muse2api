@@ -66,7 +66,7 @@ def test_request_logged(client, admin):
     key = client.post("/admin/keys", headers=admin, json={"name": "bob"}).json()
     headers = {**_bearer(key["api_key"]), "cf-connecting-ip": "203.0.113.7"}
     r = client.post("/v1/chat/completions", headers=headers, json={
-        "model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
+        "model": "muse-chat", "messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 200
 
     row = _requests(client, admin)[0]

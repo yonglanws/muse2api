@@ -12,12 +12,7 @@ _CREATED = int(time.time())
 
 @router.get("/v1/models")
 async def list_models() -> dict:
-    """The models this gateway really runs.
-
-    Compatibility aliases (``gpt-4o``, ``dall-e-3``, ...) are still accepted when a
-    client sends them, but they are not advertised here: they would suggest this
-    gateway serves those vendors' models, and every alias just resolves to a muse one.
-    """
+    """The models this gateway really runs."""
     data = [
         {"id": m.id, "object": "model", "created": _CREATED, "owned_by": m.owned_by, "kind": m.kind}
         for m in MODELS.values()

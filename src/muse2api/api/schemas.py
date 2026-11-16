@@ -42,7 +42,7 @@ class ImageGenerationRequest(_Lenient):
     n: int = Field(default=1, ge=1, le=4)
     size: str | None = None
     response_format: Literal["url", "b64_json"] = "url"
-    # Same values as OpenAI gpt-image-1. "transparent" cuts the subject out locally
+    # OpenAI's image background values. "transparent" cuts the subject out locally
     # and returns an RGBA PNG; "auto"/"opaque" leave the image as generated.
     background: Literal["auto", "opaque", "transparent"] | None = None
     image: str | list[str] | None = Field(

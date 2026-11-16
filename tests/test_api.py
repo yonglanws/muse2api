@@ -18,26 +18,23 @@ def test_auth_required(client):
 
 def test_models(client, auth):
     models = client.get("/v1/models", headers=auth).json()["data"]
-    ids = {m["id"] for m in models}
-    assert ids == {"muse-chat", "muse-image", "muse-video"}
-    # Aliases are accepted for compatibility but never advertised as models.
-    assert all("alias_of" not in m for m in models)
+    assert {m["id"] for m in models} == {"muse-chat", "muse-image", "muse-video"}
 
 
 def test_chat_non_stream(client, auth):
     r = client.post("/v1/chat/completions", headers=auth, json={
-        "model": "gpt-4o", "messages": [{"role": "user", "content": "hello"}]})
+        "model": "muse-chat", "messages": [{"role": "user", "content": "hello"}]})
     assert r.status_code == 200
     body = r.json()
     assert body["object"] == "chat.completion"
-    assert body["model"] == "gpt-4o"
+    assert body["model"] == "muse-chat"
     assert "hello" in body["choices"][0]["message"]["content"]
 
 
 def test_chat_system_content_parts_use_the_prompt_bridge(client, auth, monkeypatch):
     seen = _capture_chat_requests(client, monkeypatch)
     r = client.post("/v1/chat/completions", headers=auth, json={
-        "model": "gpt-4o",
+        "model": "muse-chat",
         "messages": [
             {"role": "system", "content": [{"type": "text", "text": "你是一只猫，只回复喵。"}]},
             {"role": "user", "content": "你好"},
