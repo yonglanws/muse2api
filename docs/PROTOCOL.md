@@ -148,7 +148,41 @@ muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条�
 
 **0.7.0 实测（真实 muse.ai，经网关全链路）**：带 system 的会话中，模型自称角色名（"我是 Atlas-77，一个天气问答助手"）、回复格式精确跟随（两短句）、记忆隔离生效（不再泄露账号主人信息）；同线程续接保持规则；工具调用与结果续接正常。
 
-**已知边界**（逆向确认，无法绕过）：muse.ai 的核心身份写在服务端静态提示词里（VM 内 `workspace/system/system_prompt.md`，73 KB，可读但没有写入口）。没有 system 消息、仅把身份写在普通用户文本里时，直接问"你是谁"仍会自称 Muse——这与 OpenAI 语义一致（user 消息弱于 system），不是网关缺陷。`hidden_prompt` 字段行为惰性；Shared Agents（自带 identity/definition 的真 system 通道）服务端已 404 下线；`goal_prompt` 返回 410；`chat.stream` 的 `model` 字段被接受但忽略；`temperature` / `top_p` 等采样参数上游不暴露（0.9.0 探针确认 `delta.message_done` 也不含 token 计数），网关按"接受但忽略"处理，JSON 模式用指令块 + 解析校验近似实现。
+**已知边界**（逆向确认，无法绕过）：muse.ai 的核心身份写在服务端静态提示词里（VM 内 `workspace/system/system_prompt.md`，73 KB，可读但没有写入口）。没有 system 消息、仅把身份写在普通用户文本里时，直接问"你是谁"仍会自称 Muse——这与 OpenAI 语义一致（user 消息弱于 system），不是网关缺陷。`temperature` / `top_p` 等采样参数上游不暴露（0.9.0 探针确认 `delta.message_done` 也不含 token 计数），网关按"接受但忽略"处理，JSON 模式用指令块 + 解析校验近似实现。0.16.0 probe 18 修正旧结论：`chat.stream` 的 `model` 字段**会被接受并生效**（`auto/auto`），现已接入网页同源信封。完整注入面全图见 4.3。
+
+### 4.3 身份与提示词注入面全图（0.16.0/0.17.0，probe 18-27）
+
+对上游全部 RPC 注册表（411 个方法）与前端 bundle 的系统排查（2026-11-17，逐项实证，脚本在 muse2api-recon/scripts/probe18-27）：
+
+**活的原生注入通道（网关已接入）**
+
+| 通道 | 写入方式 | 生效语义 |
+|---|---|---|
+| `IDENTITY.md` / `SOUL.md` / `AGENTS.md` | fs.write（harness 托管段） | 服务端**逐轮实时**注入（probe 23b：同线程中途改动当轮生效）；事件流里没有 fs.read 工具调用 → 服务器侧特权上下文，不是模型自己读文件 |
+| `- **Vibe:**` 行 | `onboarding.identity.set`（3 个 id）或 fs.write | 逐轮实时注入语气；注入器校验值必须是 `dry_witty` / `short_concise` / `warm_friendly`（probe 25：自由文本被丢弃）；上游无删除接口 → `vibe="none"` 靠 fs.write 删行（probe 20 T3：删行后语气当轮回退） |
+| 开发者时间标签 | `chat.stream` 的 `timezone`（粘性） | 每轮 `[Day … TZ] [client_timezone=…]` |
+| model 通道 | `model.get` + `chat.stream` 的 `model` | 网页同源信封（0.16.0） |
+| 记忆文件 | 上游后台整理器独占 | 网关只读不写 |
+
+**已证实关闭的通道（死路清单，附证据）**
+
+| 通道 | 证据 |
+|---|---|
+| `chat.stream` system/instructions 类字段 | 前端 bundle 无此类字段名；信封字段全集已解码（items/node_id/capabilities/hidden_prompt/session_id/model/reply_element_kinds/client_ip/timezone/metadata/voice） |
+| `chat.stream` 的 `hidden_prompt` | probe 21 重测：携带后身份不变（0.7.0 结论复验） |
+| `chat.stream` 的 `metadata`；item 级 `role`/`author` | probe 21/24：惰性 |
+| `context_attachment` item | 仅 `browser_tab` 一种（bundle） |
+| Shared Agents `shared_agents.create`（`definition.instructions` = 真 system 通道！） | `shared_agents.capabilities` 404 → 客户端判定 `supported:false`，服务端对本账号禁用（probe 7/21）；create/definition 的完整 schema 已解码备用，feature flag 一开即可接入 |
+| `onboarding.identity.set` 的 name/creature/emoji/tagline/description | probe 22/26：单字段 400（vibe 必填），全字段调用只落地 vibe；`onboarding.reset` 重开 `bootstrap_mode` 后再试仍被丢；`PATCH`/`POST /identity` 403 |
+| peers.rules.set（对端 Muse 规则） | peers 面 503 未开放（probe 27） |
+| `voice.s2s_prompts` | 403（未开通） |
+| `redteam.mocks` | 空 body 200 no-op，无提示词杠杆（probe 21/23b） |
+| `config.update` | 仅 `llm.reasoning.*.effort`（probe 21） |
+| `goal_prompt` / 旧 Shared Agents 路径 | 410 / 404 |
+
+**身份护栏（probe 24，模型级）**：把 `- **Name:** Pixel-9`、`- **Tagline:** …` 等 bullet 写进 `IDENTITY.md` 后，`/identity` 能解析（`name_set:true`），但模型在对话里主动拒绝："That Pixel-9 persona wasn't chosen by you — your recorded change was the Mizuki avatar — so I'm not adopting it as mine."——身份自我认知以服务端 DB 记录为准（name 仅注册期写入），文件只是语气层载体。指令块（用户指令通道）不受此护栏限制：E2E 中模型按 system 指令自称"我是 Pixel-9"并精确遵守输出格式。
+
+**结论**：`system` 语义的最后一块差异（注册期之外的姓名自我认知）由上游服务端 DB + 模型级护栏双重锁定，无协议层旁路；其余维度（角色、语气、格式、记忆隔离、信封字段、引用标记）已与网页对话同源。
 
 ## 5. 工具调用（原生客户端工具通道 + Planner 兜底）
 
@@ -223,7 +257,7 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 2. **上游行为**：muse.ai 仍是 Agent，不是可完全控制的 LLM；它可能拒绝某些请求，或给出与普通 LLM 不同的结果。
 3. **账号级记忆**：会话隔离前导 + 托管规则明确禁用 `muse.memory_search` / `muse.memory_get`（0.7.0 实测有效）；账号的记忆文件本身仍会由上游的后台整理流程读写，网关不会删除或改写 MEMORY.md。
 4. **线程订阅**：每个活跃线程一个长连接订阅；大量并发会话会占用上游订阅资源，默认 64 个/账号，按 LRU 淘汰。有轮次正在执行的线程不会被淘汰。
-5. **系统提示词边界**：`system` 通过"托管规则 + 指令块"双层注入，实测能稳定跟随角色、格式与记忆隔离；但 muse.ai 服务端的静态核心提示词（VM 内 `workspace/system/system_prompt.md`）没有写入口，完全替换模型身份做不到。没有 system 消息时行为与 OpenAI 语义一致（user 文本弱于 system）。
+5. **系统提示词边界**：`system` 通过"托管规则 + 指令块"双层注入，实测能稳定跟随角色、格式与记忆隔离；muse.ai 服务端的静态核心提示词（VM 内 `workspace/system/system_prompt.md`）没有写入口，注册期之外的助手姓名自我认知同样不可写（probe 22/24/26：服务端 DB + 模型级身份护栏双重锁定）。没有 system 消息时行为与 OpenAI 语义一致（user 文本弱于 system）。完整通道清单见 4.3。
 6. **原生工具的随机性**：Muse 偶尔无视已注册命令直接说"没有这个工具"，或优先用自己的内置工具；混合通道用"真实工具"提示词 + 托管规则 + 拒绝检测 + Planner 重试兜底，上游行为不能 100% 保证。
 7. **命令注册是连接级的**：同账号所有会话共享已注册命令；无关会话的 Muse 若自发调用会被 `not_available` 拒绝并自行解释。
 8. **图片格式**：返回上游原始格式（常见 WebP），不强制转 PNG；`background=transparent` 仍需要可选 matting extra。

@@ -140,8 +140,9 @@ muse.ai 的 `chat.stream` 没有独立的 `system` 角色。网关用四层机�
 
 1. **VM 托管规则**：Agent 每次会话开始都会读取账号 VM 里的 `IDENTITY.md` / `SOUL.md` / `AGENTS.md`，服务端还会逐轮重新注入。网关在这三个文件末尾维护一段带标记的托管规则（跟随 system 指令、禁用账号记忆工具、优先使用已注册客户端命令）。原文件先备份到 `data/harness_backup/`，`POST /admin/harness/{id}/restore` 可随时还原。
 2. **会话内指令块**：`system` / `developer` 消息收集成前置指令块，当前用户消息单独放在最后；后续轮次只发送新的用户轮。指令内容变化会换新线程，避免新旧规则混用。
-3. **原生 persona 语气通道（0.16.0，probe 19）**：`POST /admin/identity/{id}` 走上游 `onboarding.identity.set`，`vibe`（`dry_witty` / `short_concise` / `warm_friendly`）会写进 `IDENTITY.md` 并被服务端实时解析、注入到**新对话**的自我认知——这是唯一的原生写入通道（`name` 仅 onboarding 期生效）。`GET /admin/identity/{id}` 实时读取。
+3. **原生 persona 语气通道（0.16.0 probe 19 / 0.17.0 probe 21-26）**：`POST /admin/identity/{id}` 走上游 `onboarding.identity.set`，`vibe`（`dry_witty` / `short_concise` / `warm_friendly`）写进 `IDENTITY.md` 后被服务端**逐轮实时**解析注入（probe 23b：同一线程中途删掉该行，语气当轮回退）。`vibe="none"` 删除该行（上游没有 vibe 删除接口，这是唯一的关闭开关）；`GET /admin/identity/{id}` 附带 `gateway.vibe_line` 诊断（probe 25：自由文本值会被注入器的 id 校验丢弃）。`name` 仅注册期可写（probe 22/26：重开 bootstrap 也不解锁，PATCH/POST /identity 均 403）——模型还会主动核对服务端身份记录、拒绝文件里未登记的人格声明（probe 24）。
 4. **网页同源信封（0.16.0，probe 18）**：连接时 `model.get`（`GET /model`）读取账号选中模型与 `model_identity_visibility`，`visible` 时每轮 `chat.stream` 携带 `model`；发送网页客户端同款 `capabilities`；`MUSE2API_TIMEZONE` 使上游逐轮渲染 `[Day YYYY-MM-DD HH:MM:SS TZ] [client_timezone=…]` 开发者消息（时区粘性保持）。`GET/PATCH /admin/vm-config/{id}` 可读写 VM 推理努力配置（`llm.reasoning.*.effort`）。
+5. **隐私开关（0.17.0，probe 21）**：`GET/POST /admin/product-improvements/{id}` 读写账号的 Meta 数据训练授权（`training_enabled`）。给网关接入第三方提示词前，可先 `{"training_enabled": false}` 退出训练。完整注入面全图（含已证实的硬边界）见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 实测（真实 muse.ai 全链路）：带 system 的会话里，模型自称 system 定义的姓名、精确跟随输出格式、不泄露账号主人的记忆。回复里的网页版内联引用标记（`【url_id†L9】`，网页 UI 渲染成来源卡片）可用 `MUSE2API_CITATION_MARKERS=footnote|strip` 归一化为 `[1]` 脚注或移除，URL 本体始终在 `annotations`。完整逆向记录见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
@@ -298,8 +299,9 @@ client.responses.create(
 | GET | `/admin/requests` · `/admin/stats` | 请求日志与聚合 |
 | GET | `/admin/status` · `/admin/tasks` | 服务状态 / 任务列表 |
 | GET/POST | `/admin/harness[/{id}/restore]` | 查看 / 还原 VM 托管规则 |
-| GET/POST | `/admin/identity/{id}` | 原生身份读取 / persona 语气写入（probe 19） |
+| GET/POST | `/admin/identity/{id}` | 原生身份读取（含 vibe_line 诊断）/ persona 语气写入与清除（`vibe="none"`） |
 | GET/PATCH | `/admin/vm-config/{id}` | VM 推理配置读取 / 更新（`llm.reasoning.*.effort`） |
+| GET/POST | `/admin/product-improvements/{id}` | Meta 数据训练授权读取 / 退出（`training_enabled`） |
 | GET | `/admin/extension.zip` | Cookie 导入插件 |
 | GET | `/` | 管理控制台（`/dashboard` 自动跳转） |
 

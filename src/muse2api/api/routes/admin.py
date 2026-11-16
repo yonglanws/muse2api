@@ -228,8 +228,14 @@ async def harness_restore(account_id: str, svc: Services = Depends(get_services)
 
 @router.get("/identity/{account_id}")
 async def identity_get(account_id: str, svc: Services = Depends(get_services)) -> dict:
-    """The account's native Muse identity (probe 19: parsed from IDENTITY.md
-    live — ``name``, ``vibe``, ``emoji``; ``name_set`` false means the default)."""
+    """The account's native Muse identity plus gateway diagnostics.
+
+    ``identity`` mirrors the upstream parse of IDENTITY.md (probe 19: live —
+    ``name`` comes from the onboarding-side server DB, ``vibe``/``tagline``
+    from the file's ``- **Vibe:**`` line). ``identity.gateway`` reports the
+    raw vibe line and whether the injector will actually apply it (probes
+    23b/25: the line is injected every turn, but only when it matches one of
+    the three upstream vibe ids)."""
     identity = getattr(svc.driver, "identity_get", None)
     if identity is None:
         raise FeatureNotImplemented("identity needs the protocol driver")
@@ -244,10 +250,13 @@ async def identity_set(account_id: str, body: IdentitySetRequest,
                        svc: Services = Depends(get_services)) -> dict:
     """Native persona-tone channel (``onboarding.identity.set``).
 
-    ``vibe`` applies upstream (dry_witty / short_concise / warm_friendly): a
-    ``- **Vibe:** …`` line lands in IDENTITY.md and the agent's tone in NEW
-    conversations follows it immediately. ``name`` is onboarding-only —
-    upstream keeps the default Muse name (probed 19c)."""
+    ``vibe`` applies upstream (dry_witty / short_concise / warm_friendly —
+    probe 25: any other value is dropped by the injector's id check): a
+    ``- **Vibe:** …`` line lands in IDENTITY.md and the agent's tone follows
+    it live from the next turn. ``vibe="none"`` strips the line — upstream
+    has no vibe delete, so this is the only off switch. ``name`` is
+    onboarding-only — probed 22/26: dropped even in reopened bootstrap mode,
+    and PATCH/POST /identity are 403."""
     setter = getattr(svc.driver, "identity_set", None)
     if setter is None:
         raise FeatureNotImplemented("identity set needs the protocol driver")
@@ -282,6 +291,36 @@ async def vm_config_patch(account_id: str, body: dict,
     account = _get(svc, account_id)
     result = await patcher(account, body)
     return {"account_id": account_id, "config": result}
+
+
+@router.get("/product-improvements/{account_id}")
+async def product_improvements_get(account_id: str,
+                                   svc: Services = Depends(get_services)) -> dict:
+    """The account's Meta data-training settings (``training_enabled`` plus
+    any filed objection). Useful before serving third-party prompts."""
+    getter = getattr(svc.driver, "product_improvements_get", None)
+    if getter is None:
+        raise FeatureNotImplemented("product-improvements needs the protocol driver")
+    account = _get(svc, account_id)
+    result = await getter(account)
+    return {"account_id": account_id, "supported": result is not None,
+            "product_improvements": result}
+
+
+@router.post("/product-improvements/{account_id}")
+async def product_improvements_set(account_id: str, body: dict,
+                                   svc: Services = Depends(get_services)) -> dict:
+    """Toggle the account's data training: ``{"training_enabled": false}``
+    opts the account's conversations out of Meta product improvement."""
+    setter = getattr(svc.driver, "product_improvements_set", None)
+    if setter is None:
+        raise FeatureNotImplemented("product-improvements needs the protocol driver")
+    enabled = body.get("training_enabled") if isinstance(body, dict) else None
+    if not isinstance(enabled, bool):
+        raise InvalidRequest('a JSON body {"training_enabled": true|false} is required')
+    account = _get(svc, account_id)
+    result = await setter(account, training_enabled=enabled)
+    return {"account_id": account_id, "result": result}
 
 
 @router.get("/extension.zip")

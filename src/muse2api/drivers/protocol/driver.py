@@ -389,6 +389,10 @@ class ProtocolDriver(MuseDriver):
         return restored
 
     # ------------------------------------------- identity / vm config admin
+    VIBE_LINE_RE = re.compile(r"^[ \t]*- \*\*Vibe:\*\*[ \t]*(.+?)[ \t]*$",
+                              re.MULTILINE)
+    VIBE_IDS = frozenset({"dry_witty", "short_concise", "warm_friendly"})
+
     async def _account_client(self, account: Account,
                               state: _AccountState) -> MuseProtocolClient:
         for conn in state.conns:
@@ -402,19 +406,75 @@ class ProtocolDriver(MuseDriver):
         finally:
             self._release_conn(conn)
 
+    async def _identity_diagnostics(self, client: MuseProtocolClient) -> dict[str, Any]:
+        """Gateway-side vibe-line state of IDENTITY.md (probes 23b/25: the
+        injected tone follows this line live EVERY turn, but only when its
+        value matches one of the three upstream vibe ids — anything else is
+        ignored by the injector)."""
+        try:
+            text = await client.read_text_file("IDENTITY.md")
+        except UpstreamError:
+            return {}
+        match = self.VIBE_LINE_RE.search(text or "") if text else None
+        if match is None:
+            return {"vibe_line": None, "vibe_line_valid_id": False}
+        value = match.group(1)
+        return {"vibe_line": value, "vibe_line_valid_id": value in self.VIBE_IDS}
+
+    async def _strip_vibe_line(self, client: MuseProtocolClient) -> None:
+        """Remove every ``- **Vibe:**`` line from IDENTITY.md.
+
+        Upstream has no vibe delete (``onboarding.identity.set`` rejects
+        null/empty — probe 19); stripping the line neutralizes the injected
+        tone even when a vibe was set earlier (probe 20 T3)."""
+        text = await client.read_text_file("IDENTITY.md")
+        if not text:
+            return
+        stripped = self.VIBE_LINE_RE.sub("", text)
+        stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+        if stripped != text:
+            await client.write_text_file("IDENTITY.md", stripped.rstrip("\n") + "\n")
+
     async def identity_get(self, account: Account) -> dict[str, Any] | None:
-        """Parsed account identity (name/vibe/emoji — probe 19: live IDENTITY.md
-        parse, ``vibe``/``tagline`` come from the file's ``- **Vibe:**`` line)."""
+        """Parsed account identity plus gateway vibe-line diagnostics.
+
+        Probes 19/23b/25: ``vibe``/``tagline`` come from the file's
+        ``- **Vibe:**`` line, parsed and injected live every turn; ``name``
+        comes from the onboarding-side server DB (signup-only write)."""
         client = await self._account_client(account, self._state(account.id))
-        return await client.identity_get()
+        identity = await client.identity_get()
+        if identity is None:
+            return None
+        return {**identity, "gateway": await self._identity_diagnostics(client)}
 
     async def identity_set(self, account: Account, *, name: str | None = None,
                            vibe: str | None = None) -> dict[str, Any]:
         """Native persona-tone write. ``vibe`` applies (dry_witty /
-        short_concise / warm_friendly); ``name`` is onboarding-only upstream."""
+        short_concise / warm_friendly — probed 25: other values are dropped
+        by the injector's id check); ``vibe="none"`` strips the line (the
+        only way to switch the injected tone off); ``name`` is onboarding-only
+        upstream (probes 22/26: ignored even in reopened bootstrap mode)."""
         client = await self._account_client(account, self._state(account.id))
+        if vibe is not None and vibe.strip().lower() == "none":
+            await self._strip_vibe_line(client)
+            log.info("identity vibe line stripped for %s", account.id)
+            return {"vibe": None}
         result = await client.identity_set(name=name, vibe=vibe)
         log.info("identity set for %s: name=%s vibe=%s", account.id, name, vibe)
+        return result
+
+    async def product_improvements_get(self, account: Account) -> dict[str, Any] | None:
+        """Account data-training settings (``training_enabled`` + objection)."""
+        client = await self._account_client(account, self._state(account.id))
+        return await client.product_improvements_get()
+
+    async def product_improvements_set(self, account: Account, *,
+                                       training_enabled: bool) -> dict[str, Any]:
+        client = await self._account_client(account, self._state(account.id))
+        result = await client.product_improvements_set(
+            training_enabled=training_enabled)
+        log.info("product improvements for %s: training_enabled=%s",
+                 account.id, training_enabled)
         return result
 
     async def vm_config_get(self, account: Account) -> dict[str, Any] | None:

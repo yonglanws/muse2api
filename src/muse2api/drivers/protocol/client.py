@@ -716,6 +716,38 @@ class MuseProtocolClient:
             return {}
         return payload.get("result") if isinstance(payload, dict) else {}
 
+    async def product_improvements_get(self) -> dict[str, Any] | None:
+        """Account data-training settings (noise ``product_improvements.get``).
+
+        ``{"training_enabled": bool, "training_objection": {...}}``; ``None``
+        when the surface is unavailable."""
+        try:
+            response = await self.request("GET", "/api/product-improvements",
+                                          None, 20)
+        except Exception:  # noqa: BLE001 - optional surface
+            return None
+        if response.status != 200:
+            return None
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        result = body.get("result") if isinstance(body, dict) else None
+        return result if isinstance(result, dict) else None
+
+    async def product_improvements_set(self, *, training_enabled: bool) -> dict[str, Any]:
+        """Toggle account data training (noise ``product_improvements.set``)."""
+        response = await self.request("POST", "/api/product-improvements",
+                                      {"training_enabled": training_enabled}, 20)
+        if response.status != 200:
+            raise UpstreamError(
+                f"/api/product-improvements returned HTTP {response.status}")
+        try:
+            body = response.json()
+        except ValueError:
+            return {}
+        return body.get("result") if isinstance(body, dict) else {}
+
     async def vm_config_get(self) -> dict[str, Any] | None:
         """VM agent config (llm.reasoning.* effort), noise ``config.get``."""
         try:

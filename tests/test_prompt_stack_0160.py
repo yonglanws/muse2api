@@ -208,6 +208,7 @@ async def test_identity_and_vm_config_passthrough():
                                      "vibe": None, "path": "IDENTITY.md"}
             self.config_payload = {"llm": {"reasoning": {
                 "root_agent": {"effort": "high"}}}}
+            self.files = {"IDENTITY.md": "# IDENTITY.md\n"}
 
         async def identity_get(self):
             return dict(self.identity_payload)
@@ -216,6 +217,12 @@ async def test_identity_and_vm_config_passthrough():
             if vibe:
                 self.identity_payload["vibe"] = vibe
             return {"vibe": vibe}
+
+        async def read_text_file(self, path: str) -> str | None:
+            return self.files.get(path)
+
+        async def write_text_file(self, path: str, text: str) -> None:
+            self.files[path] = text
 
         async def vm_config_get(self):
             return dict(self.config_payload)
@@ -229,6 +236,7 @@ async def test_identity_and_vm_config_passthrough():
     account = Account(id="acc_admin")
     got = await driver.identity_get(account)
     assert got["name"] == "Muse"
+    assert got["gateway"] == {"vibe_line": None, "vibe_line_valid_id": False}
     await driver.identity_set(account, vibe="dry_witty")
     assert client.identity_payload["vibe"] == "dry_witty"
     cfg = await driver.vm_config_get(account)

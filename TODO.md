@@ -51,6 +51,7 @@
 | I2 | 原生 persona 通道（onboarding.identity.set vibe / identity 读写管理端点） | P1 | `drivers/protocol/client.py` · `api/routes/admin.py` | | ✅ 已完成（0.16.0，probe 19） |
 | I3 | 引用标记归一化（【url_id†L9】→ [n]/删除，流式安全） | P2 | `core/citations.py` · `drivers/protocol/driver.py` | | ✅ 已完成（0.16.0） |
 | I4 | VM 推理配置端点（config.get / config.update 透传） | P2 | `api/routes/admin.py` | | ✅ 已完成（0.16.0） |
+| I5 | 身份注入面收尾（vibe="none" 清除 / vibe_line 诊断 / product-improvements 隐私开关；probe 21-27 硬边界证实） | P2 | `drivers/protocol/driver.py` · `api/routes/admin.py` | | ✅ 已完成（0.17.0） |
 
 ---
 
@@ -110,6 +111,8 @@
 | 0.13.1 | 生产镜像内置 `[matting]` extra（rembg + pymatting），预下载 BiRefNet-lite；`background=transparent` 真正返回 RGBA PNG |
 | 0.14.0 | OpenAI Conversations API（CRUD + items 分页）；Responses `conversation` 自动前置历史并在完成后追加本轮 |
 | 0.15.0 | `/v1/responses/compact`（本地摘要 compaction item，可回传）；视频 `thumbnail`/`spritesheet`（本地 ffmpeg + 缓存） |
+| 0.16.0 | 网页同源信封（model.get/model+timezone+capabilities）；原生 vibe 通道与引用标记归一化；VM 推理配置端点 |
+| 0.17.0 | 身份注入面全图（probe 21-27：逐轮实时注入/身份护栏/name 仅注册期）；vibe 清除与诊断；product-improvements 隐私开关 |
 
 详细记录：
 

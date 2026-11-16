@@ -172,11 +172,13 @@ class KeyUpdate(BaseModel):
 
 
 class IdentitySetRequest(BaseModel):
-    """Native persona-tone update for an account (probe 19)."""
+    """Native persona-tone update for an account (probes 19/22/25/26)."""
     name: str | None = Field(default=None, min_length=1, max_length=100,
-                             description="Onboarding-only upstream; the default "
-                             "Muse name is kept.")
+                             description="Onboarding-only upstream; probed 22/26: "
+                             "dropped even in reopened bootstrap mode.")
     vibe: str | None = Field(
         default=None, min_length=1, max_length=60,
         description="Tone persona applied upstream: dry_witty, short_concise "
-        "or warm_friendly.")
+        "or warm_friendly (probe 25: other values are dropped by the "
+        "injector's id check). Send \"none\" to strip the vibe line — the "
+        "only way to switch the injected tone off.")
