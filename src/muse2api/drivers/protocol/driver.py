@@ -237,6 +237,25 @@ class ProtocolDriver(MuseDriver):
         except RuntimeError:
             pass
 
+    def _mark_seen_async(self, client: MuseProtocolClient, session_id: str) -> None:
+        """Fire-and-forget ``chat.mark_seen`` after a completed turn (0.18.0).
+
+        Mirrors the web client, which marks a thread seen without blocking the
+        transcript render.  Errors are swallowed: bookkeeping must never fail
+        a turn, and older builds may not know the route.
+        """
+
+        async def _seen() -> None:
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(client.mark_seen(session_id), 5)
+
+        try:
+            task = asyncio.get_running_loop().create_task(_seen())
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        except RuntimeError:
+            pass
+
     def _state(self, account_id: str) -> _AccountState:
         state = self._accounts.get(account_id)
         if state is None:
@@ -728,10 +747,9 @@ class ProtocolDriver(MuseDriver):
                         # so a thread never keeps an unread badge.  Gateway
                         # turns are read by definition; without this every
                         # session accumulates unread_count in the owner's
-                        # muse.ai UI.
-                        with contextlib.suppress(BaseException):
-                            await asyncio.wait_for(
-                                client.mark_seen(thread.session_id), 5)
+                        # muse.ai UI.  Fire-and-forget like the web: the turn
+                        # must not wait on bookkeeping.
+                        self._mark_seen_async(client, thread.session_id)
                         await self._expose_turn_extras(client, req, outcome)
                 except asyncio.CancelledError:
                     raise

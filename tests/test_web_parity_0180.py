@@ -12,6 +12,8 @@ Recon basis (web bundle, 2026-11-17):
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from muse2api.accounts.model import Account
@@ -26,6 +28,12 @@ async def test_completed_turn_marks_thread_seen():
     [text async for text in driver.chat_stream(
         account, _chat("hello", [("user", "hello")]))]
     session_id = client.calls[0]["session_id"]
+    # The web marks seen without blocking the turn; the gateway does the same
+    # in a background task, so give the loop a few ticks.
+    for _ in range(20):
+        if getattr(client, "seen_calls", None):
+            break
+        await asyncio.sleep(0)
     assert getattr(client, "seen_calls", []) == [session_id]
 
 
@@ -41,6 +49,9 @@ async def test_mark_seen_failure_is_tolerated():
     chunks = [chunk async for chunk in driver.chat_stream(
         account, _chat("hello", [("user", "hello")]))]
     assert chunks and chunks[0].startswith("reply:")
+    # Let the failing background task run; the exception must be swallowed.
+    for _ in range(20):
+        await asyncio.sleep(0)
 
 
 # ------------------------------------------------------------- session history
