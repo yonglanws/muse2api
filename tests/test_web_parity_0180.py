@@ -64,6 +64,39 @@ async def test_session_history_passes_web_paging_params():
                     "after_seq": 10, "before_seq": None}
 
 
+# ---------------------------------------------------------------- session list
+async def test_sessions_list_passthrough():
+    driver, client = _driver_with_fake()
+    rows = [{"session_id": "s1", "title": "t", "unread_count": 0}]
+
+    async def list_sessions() -> list[dict]:
+        return rows
+
+    client.list_sessions = list_sessions  # type: ignore[method-assign]
+    account = Account(id="acc_test")
+    assert await driver.sessions_list(account) == rows
+
+
+async def test_client_list_sessions_parses_result_wrapper():
+    from muse2api.drivers.protocol.client import MuseProtocolClient
+
+    client = MuseProtocolClient({})
+
+    class _Response:
+        status = 200
+
+        def json(self) -> dict:
+            return {"result": {"sessions": [{"session_id": "s1"}]}}
+
+    async def fake_request(method: str, path: str, body, timeout: float = 15):
+        assert method == "GET" and path == "/api/session/list"
+        return _Response()
+
+    client.request = fake_request  # type: ignore[method-assign]
+    sessions = await client.list_sessions()
+    assert sessions == [{"session_id": "s1"}]
+
+
 # ---------------------------------------------------------------- timezone guard
 def test_timezone_accepts_iana_key():
     assert Settings(timezone="Asia/Shanghai").timezone == "Asia/Shanghai"

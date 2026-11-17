@@ -293,6 +293,22 @@ async def vm_config_patch(account_id: str, body: dict,
     return {"account_id": account_id, "config": result}
 
 
+@router.get("/sessions/{account_id}")
+async def sessions_list(account_id: str,
+                        svc: Services = Depends(get_services)) -> dict:
+    """List the account's upstream threads (web: ``sessions.list``).
+
+    Compact view of ``GET /api/session/list``: each thread's id, title,
+    snippet, primary/thread flags, unread count and timestamps. Read-only.
+    """
+    lister = getattr(svc.driver, "sessions_list", None)
+    if lister is None:
+        raise FeatureNotImplemented("session listing needs the protocol driver")
+    account = _get(svc, account_id)
+    sessions = await lister(account)
+    return {"account_id": account_id, "count": len(sessions), "sessions": sessions}
+
+
 @router.get("/sessions/{account_id}/{session_id}/history")
 async def session_history(account_id: str, session_id: str,
                           limit: int = Query(100, ge=1, le=500),

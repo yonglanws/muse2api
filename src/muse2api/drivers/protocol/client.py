@@ -625,6 +625,23 @@ class MuseProtocolClient:
         return Subscription(self, stream_id, session_id, ack)
 
     # ------------------------------------------------------ web chat parity
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        """The account's threads (web: ``sessions.list`` → GET /api/session/list).
+
+        Each entry carries ``session_id``, ``title``, ``snippet``,
+        ``is_primary``/``is_thread``, ``unread_count`` and timestamps.
+        """
+        response = await self.request("GET", "/api/session/list", None, 25)
+        if response.status != 200:
+            raise UpstreamError(f"sessions.list returned HTTP {response.status}")
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+        result = payload.get("result") if isinstance(payload, dict) else None
+        sessions = result.get("sessions") if isinstance(result, dict) else None
+        return sessions if isinstance(sessions, list) else []
+
     async def mark_seen(self, thread_id: str) -> None:
         """Mark a thread's transcript as read (web: ``chat.mark_seen``).
 

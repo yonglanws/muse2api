@@ -467,6 +467,11 @@ class ProtocolDriver(MuseDriver):
         client = await self._account_client(account, self._state(account.id))
         return await client.product_improvements_get()
 
+    async def sessions_list(self, account: Account) -> list[dict[str, Any]]:
+        """The account's upstream threads (id/title/snippet/unread/...)."""
+        client = await self._account_client(account, self._state(account.id))
+        return await client.list_sessions()
+
     async def session_history(self, account: Account, session_id: str, *,
                               limit: int = 100,
                               after_seq: int | None = None,
