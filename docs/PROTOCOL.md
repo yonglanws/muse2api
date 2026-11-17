@@ -310,6 +310,8 @@ POST /client/invoke-result           网关应答 {invoke_id, ok, payload_json|e
 8. **图片格式**：返回上游原始格式（常见 WebP），不强制转 PNG；`background=transparent` 仍需要可选 matting extra。
 9. **托管规则影响整个账号**：IDENTITY.md/SOUL.md 的托管段对该账号在 muse.ai 网页端的手工使用也可见。需要原样使用网页端时，先 `POST /admin/harness/{id}/restore` 还原备份。
 10. **token 计数是本地估算**：上游协议不返回计费 token，`usage` 与 `max_tokens` 由网关内置的 `tiktoken o200k_base`（镜像内预缓存）计算；同一段文本与 muse.ai 的计费口径可能有偏差，但截断行为是精确的 token 边界。
+11. **采样参数不生效**：`temperature` / `top_p` / `presence_penalty` / `frequency_penalty` / `seed` 会被校验并按 OpenAI 语义回显，但不会传给上游——Muse 是 Agent 模型，运行时没有采样控制面（`/config` 只有 reasoning effort）。需要确定性输出时请依赖提示词约束与 `response_format`。
+
 
 ## 9. 部署与回滚
 
