@@ -293,6 +293,29 @@ async def vm_config_patch(account_id: str, body: dict,
     return {"account_id": account_id, "config": result}
 
 
+@router.get("/sessions/{account_id}/{session_id}/history")
+async def session_history(account_id: str, session_id: str,
+                          limit: int = Query(100, ge=1, le=500),
+                          after_seq: int | None = Query(None, ge=0),
+                          before_seq: int | None = Query(None, ge=0),
+                          svc: Services = Depends(get_services)) -> dict:
+    """Read one upstream thread's transcript (web: ``chat.history``).
+
+    The web client pages forward with ``after_seq`` and backward with
+    ``before_seq``; events come back as ``chat_events`` (each with ``seq``
+    and ``role``). This is the read side of the web chat the gateway never
+    had — useful for exporting or auditing what actually happened in a
+    session, independent of the gateway-side conversation store."""
+    history = getattr(svc.driver, "session_history", None)
+    if history is None:
+        raise FeatureNotImplemented("session history needs the protocol driver")
+    account = _get(svc, account_id)
+    result = await history(account, session_id, limit=limit,
+                           after_seq=after_seq, before_seq=before_seq)
+    return {"account_id": account_id, "session_id": session_id,
+            "history": result}
+
+
 @router.get("/product-improvements/{account_id}")
 async def product_improvements_get(account_id: str,
                                    svc: Services = Depends(get_services)) -> dict:

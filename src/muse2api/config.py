@@ -248,6 +248,25 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("timezone")
+    @classmethod
+    def _timezone_is_iana(cls, value: str) -> str:
+        """Reject non-IANA keys early: the value is sticky upstream, so a typo
+        (``Asia/Shanghia``) would pin the account's developer time-tag to the
+        wrong zone until someone sends a corrected one."""
+        key = (value or "").strip()
+        if not key:
+            return ""
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(key)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"MUSE2API_TIMEZONE must be an IANA key like Asia/Shanghai (got {key!r})"
+            ) from exc
+        return key
+
     @property
     def media_dir(self) -> Path:
         return self.data_dir / "media"

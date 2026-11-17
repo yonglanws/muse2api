@@ -109,6 +109,10 @@ class _ParityClient:
                         **kwargs):
         return _ParitySub(self)
 
+    async def mark_seen(self, thread_id: str) -> None:
+        self.seen_calls: list[str] = getattr(self, "seen_calls", [])
+        self.seen_calls.append(thread_id)
+
     async def cancel(self, session_id: str, message_id: str | None = None) -> bool:
         return True
 

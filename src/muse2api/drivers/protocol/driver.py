@@ -467,6 +467,19 @@ class ProtocolDriver(MuseDriver):
         client = await self._account_client(account, self._state(account.id))
         return await client.product_improvements_get()
 
+    async def session_history(self, account: Account, session_id: str, *,
+                              limit: int = 100,
+                              after_seq: int | None = None,
+                              before_seq: int | None = None) -> dict[str, Any]:
+        """A thread's upstream transcript (web: ``chat.history``).
+
+        The web client pages with ``{limit, after_seq}``; events come back as
+        ``chat_events`` with ``seq``/``role``.  Returned raw — the shapes of
+        individual event kinds follow the web renderer's schema."""
+        client = await self._account_client(account, self._state(account.id))
+        return await client.chat_history(
+            session_id, limit=limit, after_seq=after_seq, before_seq=before_seq)
+
     async def product_improvements_set(self, account: Account, *,
                                        training_enabled: bool) -> dict[str, Any]:
         client = await self._account_client(account, self._state(account.id))
@@ -705,6 +718,15 @@ class ProtocolDriver(MuseDriver):
                                               else thread.image_count + len(images))
                         thread.last_seq = max(thread.last_seq, outcome.last_seq)
                         thread.last_used = time.time()
+                        # 0.18.0 web parity: the web client marks a thread seen
+                        # when its transcript is on screen (`chat.mark_seen`),
+                        # so a thread never keeps an unread badge.  Gateway
+                        # turns are read by definition; without this every
+                        # session accumulates unread_count in the owner's
+                        # muse.ai UI.
+                        with contextlib.suppress(BaseException):
+                            await asyncio.wait_for(
+                                client.mark_seen(thread.session_id), 5)
                         await self._expose_turn_extras(client, req, outcome)
                 except asyncio.CancelledError:
                     raise

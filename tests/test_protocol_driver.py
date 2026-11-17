@@ -133,6 +133,10 @@ class FakeClient:
         self.sub_calls.append((session_id, after_stream_seq))
         return FakeSub(self)
 
+    async def mark_seen(self, thread_id: str) -> None:
+        self.seen_calls: list[str] = getattr(self, "seen_calls", [])
+        self.seen_calls.append(thread_id)
+
     async def cancel(self, session_id: str, message_id: str | None = None) -> bool:
         self.cancelled = True
         return True

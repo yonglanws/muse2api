@@ -219,6 +219,17 @@ muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条�
 
 **提取路线（合规，待 VM 恢复执行）**：① 主会话所有者身份请 agent 建 runonce 诊断 cron（Scheduled Work 章节："一次一次性任务的同意=恰好一次 runonce 运行"），用其 shell `grep 'BEGIN USER CONTEXT' /opt/muse /opt/hatch` 并写 workspace 文件 → fs.read 拿回；② muse_db 技能查 Dreaming run 的任务定义（docs 明文指示用 muse.db 解释后台更新）；③ workspace/cron.d/{daily,hourly} 任务 spec 文件。daemon RPC 全量注册表（396 方法，自 web bundle 抽取）存档于 `muse2api-recon/vmfs/rpc_registry_20261117.txt`，新发现：`memory.consolidate`（手动触发整理器）、`vm.health`=GET /health、`identity.subscribe`、`bootstrap.reset`（未测，高危）。
 
+### 4.6 网页对话读写面补全（0.18.0，bundle 逆向）
+
+对照 muse.ai web bundle 的对话调用面逐项对账后的结论与修复：
+
+- **`chat.stream` 信封已一致**：网页正文 item 形状就是 `{type:"text",text}`（`O.j` 构造），attachments 走 `file_ref`，随机 UUID 走 `session_id`；capabilities 列表（`hotel_results` + 4 项 + 语音 2 项仅在语音会话）与网关常量完全一致；`node_id`/`timezone`/`model` 开关与网页相同。**无缺陷**。
+- **`client_ip` 不满发**：网页端被实验开关（`75f09f6a`）门控，默认不发送；网关暂不补。
+- **`chat.mark_seen` 缺失（0.18.0 修复）**：网页端在展示会话时调 `POST /api/chat/{thread_id}/seen`（body `{thread_id}`），所以会话永不保留未读徽标；网关从不调用 → 每个网关会话在所有者 muse.ai UI 里累积 `unread_count`。现在驱动在每轮 `message_done` 完成后 fire-and-forget 标记已读（失败容忍，5s 超时）。
+- **`chat.history` 缺失（0.18.0 补充）**：网页分页读法 `chat.history {limit, after_seq}`（前向）/`before_seq`（后向），响应 `chat_events[]`（每个事件带 `seq`/`role`）。网关新增 `GET /admin/sessions/{account_id}/{session_id}/history?limit=&after_seq=&before_seq=` 与 `ProtocolDriver.session_history`，把上游 transcript 原样（容错解析 `result` 包装）暴露给运维/审计。
+- **timezone 默认空 → 无时间标签（0.18.0 修复）**：网页端永远发送浏览器时区；网关 `MUSE2API_TIMEZONE` 默认空且生产未配置 → 网关会话默认没有 `[Day … TZ] [client_timezone=…]` developer 消息（核心提示词 L154："Trust provided time tags over any other sense of now"）。现在配置校验为合法 IANA 键（拼错启动即拒绝——该值上游**粘性保持**，错值会钉死账号时区），生产 env 设为 `Asia/Shanghai`。
+- **未补项（待 VM/进一步证据）**：`chat.search`（全局检索）、`chat.delete_turn`/`delete_message`（网关会话维护）、`chat.sxs.select`（侧聊选择）、`session.start` 显式建会话——均非 API 语义必需，记录在案。
+
 ## 5. 工具调用（原生客户端工具通道 + Planner 兜底）
 
 对 muse.ai 前端 JS 的逆向发现了真正的客户端工具通道：

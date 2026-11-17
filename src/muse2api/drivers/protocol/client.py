@@ -624,6 +624,48 @@ class MuseProtocolClient:
         self._mark("subscribe")
         return Subscription(self, stream_id, session_id, ack)
 
+    # ------------------------------------------------------ web chat parity
+    async def mark_seen(self, thread_id: str) -> None:
+        """Mark a thread's transcript as read (web: ``chat.mark_seen``).
+
+        Path carries the thread id; body is empty.  Called after every
+        completed gateway turn so sessions never keep an unread badge in the
+        owner's muse.ai UI.  Best-effort: older builds may not know the route.
+        """
+        response = await self.request(
+            "POST", f"/api/chat/{thread_id}/seen", {}, 10)
+        if response.status not in (200, 204):
+            raise UpstreamError(f"chat.mark_seen returned HTTP {response.status}")
+
+    async def chat_history(self, session_id: str | None = None, *,
+                           limit: int = 100,
+                           after_seq: int | None = None,
+                           before_seq: int | None = None) -> dict[str, Any]:
+        """Read a thread transcript (web: ``chat.history``).
+
+        The web client pages with ``{limit, after_seq}`` for forward reads and
+        the mirror shape for backward reads; the response carries
+        ``chat_events`` (each event has ``seq`` and ``role``).  Returned as a
+        dict for the caller to interpret; transport errors raise.
+        """
+        body: dict[str, Any] = {"limit": max(0, int(limit))}
+        if session_id:
+            body["session_id"] = session_id
+        if after_seq is not None:
+            body["after_seq"] = max(0, int(after_seq))
+        if before_seq is not None:
+            body["before_seq"] = max(0, int(before_seq))
+        response = await self.request("GET", "/chat/history", body, 30)
+        if response.status != 200:
+            raise UpstreamError(f"chat.history returned HTTP {response.status}")
+        try:
+            payload = response.json()
+        except ValueError:
+            return {}
+        if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+            return payload["result"]
+        return payload if isinstance(payload, dict) else {}
+
     async def chat_stream(self, session_id: str, items: list[dict[str, Any]], *,
                           node_id: str | None = None,
                           hidden_prompt: str | None = None,
