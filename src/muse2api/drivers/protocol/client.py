@@ -649,8 +649,9 @@ class MuseProtocolClient:
         completed gateway turn so sessions never keep an unread badge in the
         owner's muse.ai UI.  Best-effort: older builds may not know the route.
         """
+        # The web sends the id both in the path and the body; mirror it.
         response = await self.request(
-            "POST", f"/api/chat/{thread_id}/seen", {}, 10)
+            "POST", f"/api/chat/{thread_id}/seen", {"thread_id": thread_id}, 10)
         if response.status not in (200, 204):
             raise UpstreamError(f"chat.mark_seen returned HTTP {response.status}")
 
