@@ -97,6 +97,43 @@ async def test_client_list_sessions_parses_result_wrapper():
     assert sessions == [{"session_id": "s1"}]
 
 
+# ------------------------------------------------------------- admin routes e2e
+def test_admin_session_routes(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from muse2api.app import create_app
+    from muse2api.drivers.mock import MockDriver
+
+    class _WebDriver(MockDriver):
+        async def sessions_list(self, account):
+            return [{"session_id": "s1", "title": "t", "unread_count": 0}]
+
+        async def session_history(self, account, session_id, *, limit=100,
+                                  after_seq=None, before_seq=None):
+            return {"chat_events": [{"seq": 1, "role": "user"}],
+                    "echo": [session_id, limit, after_seq, before_seq]}
+
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data",
+                        api_key="k", admin_key="a", driver="mock")
+    app = create_app(settings, _WebDriver(delay=0))
+    with TestClient(app) as c:
+        h = {"Authorization": "Bearer a"}
+        created = c.post("/admin/accounts", headers=h,
+                         json={"label": "q", "cookies": {"hatch_sess": "x"}})
+        acc_id = created.json()["account"]["id"]
+
+        listed = c.get(f"/admin/sessions/{acc_id}", headers=h)
+        assert listed.status_code == 200
+        assert listed.json()["sessions"][0]["session_id"] == "s1"
+
+        got = c.get(f"/admin/sessions/{acc_id}/s1/history", headers=h,
+                    params={"limit": 5, "after_seq": 2})
+        assert got.status_code == 200
+        body = got.json()
+        assert body["session_id"] == "s1"
+        assert body["history"]["echo"] == ["s1", 5, 2, None]
+
+
 # ---------------------------------------------------------------- timezone guard
 def test_timezone_accepts_iana_key():
     assert Settings(timezone="Asia/Shanghai").timezone == "Asia/Shanghai"
