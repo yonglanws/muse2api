@@ -231,6 +231,29 @@ muse.ai 的 `chat.stream` 没有 `system` 字段：发送的文本就是一条�
 - **timezone 默认空 → 无时间标签（0.18.0 修复）**：网页端永远发送浏览器时区；网关 `MUSE2API_TIMEZONE` 默认空且生产未配置 → 网关会话默认没有 `[Day … TZ] [client_timezone=…]` developer 消息（核心提示词 L154："Trust provided time tags over any other sense of now"）。现在配置校验为合法 IANA 键（拼错启动即拒绝——该值上游**粘性保持**，错值会钉死账号时区），生产 env 设为 `Asia/Shanghai`。
 - **未补项（待 VM/进一步证据）**：`chat.search`（全局检索）、`chat.delete_turn`/`delete_message`（网关会话维护）、`chat.sxs.select`（侧聊选择）、`session.start` 显式建会话——均非 API 语义必需，记录在案。
 
+### 4.7 `vm_state` 假阳性导致误判"VM 僵死"（0.18.1 修复）
+
+2026-11-17 05:25 起 `GET /api/session?vm_state=live` 对**健康且正在服务**的工作区持续返回
+`vm_state: "UNKNOWN"`（`vm_state_source: "live"`）。旧版客户端把"非 RUNNING"当作不可用，
+`connect()` 直接抛 `Muse workspace is not RUNNING`，于是网关侧表现为"VM 僵死五天"：
+Noise 握手成功、所有 RPC 无响应、wake 无状态迁移——实际是客户端从未真正进入请求阶段。
+
+反证（2026-11-22）：
+
+- 同一账号在已登录的 muse.ai 网页端正常收发（8:22 发送"只回复两个字：在线"→秒回"在线"，UI 显示"已连接"），
+  而该页面自己调用 `/api/session?vm_state=live` 同样返回 `UNKNOWN`、`vm_id` 未变；
+- 我们客户端临时绕过该门槛后，Noise 握手 2.8 s 完成，`sessions.list` **0.63 s 返回 200**，
+  本地网关 `/v1/chat/completions` 10.6 s 返回"在线"——daemon、传输协议、认证全部正常；
+- 网页 bundle 对 VM 的唯一状态过滤是 `"DISABLED" !== e.vm_state`（`0ctn6hbmesxn2.js`），
+  其余状态（含 UNKNOWN）一律照连。
+
+修复：`_usable()` 只把 `vm_state == "DISABLED"` 视为硬性不可用（仍需 `status == "assigned"`
+且有 `endpoint_url`）；连接是否真正可用改由 Noise 握手 + wake/重试决定。回归测试覆盖
+`UNKNOWN`/`SUSPENDED`/空值直接连接（不触发 wake）与 `DISABLED` 拒绝。
+
+教训：`/api/session` 的 `vm_state` 是**展示用**字段，不能作为连接门禁；上游状态机与网页行为
+不一致时，以网页实际行为 + 直连探测为准。
+
 ## 5. 工具调用（原生客户端工具通道 + Planner 兜底）
 
 对 muse.ai 前端 JS 的逆向发现了真正的客户端工具通道：
