@@ -377,7 +377,8 @@ class MuseProtocolClient:
             session = await self._wake(session, confirm=wake_confirm)
         if not self._usable(session):
             state = str(session.get("vm_state") or "unknown")
-            raise UpstreamError(f"Muse workspace is not RUNNING (state={state})")
+            raise UpstreamError(
+                f"Muse workspace is not connectable (state={state})")
         self.session = session
         vm_type = str(session.get("vm_type") or "").lower()
         cvm = session.get("cvm_eligibility") or session.get("cvmEligibility") or {}
@@ -417,10 +418,20 @@ class MuseProtocolClient:
 
     @staticmethod
     def _usable(session: dict[str, Any]) -> bool:
+        """Whether ``/api/session`` describes a VM worth connecting to.
+
+        Since 2026-11-17 the live probe reports ``vm_state: UNKNOWN`` for
+        workspaces that are healthy and serving turns — the web client ignores
+        the field and connects regardless (confirmed 2026-11-22: the logged-in
+        app chats normally while ``?vm_state=live`` says UNKNOWN, and our Noise
+        client answers ``sessions.list`` in <1s once the gate is bypassed).
+        So the field is advisory only: reject just an explicitly disabled VM
+        and let the Noise handshake (plus wake/retry) be the liveness test.
+        """
         if session.get("status") != "assigned" or not session.get("endpoint_url"):
             return False
         state = str(session.get("vm_state") or "").upper()
-        return not state or state == "RUNNING"
+        return state != "DISABLED"
 
     @property
     def alive(self) -> bool:

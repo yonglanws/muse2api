@@ -277,6 +277,54 @@ async def test_connect_wakes_vm_when_noise_endpoint_is_unregistered(monkeypatch)
     await client.close()
 
 
+async def test_connect_ignores_stale_vm_state(monkeypatch):
+    """The live probe reports UNKNOWN while the VM serves turns (2026-11-22:
+    the logged-in web app chats with the same workspace that /api/session
+    labels UNKNOWN). Connection must proceed without a wake."""
+    from muse2api.drivers.protocol import client as client_module
+
+    session = {"status": "assigned", "endpoint_url": "wss://vm.example/",
+               "vm_state": "UNKNOWN", "vm_id": "vm-1", "vm_type": "hatch_vm"}
+    client = client_module.MuseProtocolClient({})
+    woke: list[int] = []
+    attempts: list[int] = []
+
+    async def fake_http(method, url, body=None, timeout=30.0):
+        return dict(session)
+
+    async def fake_wake(sess, *, confirm=20.0):
+        woke.append(1)
+        return dict(session)
+
+    async def fake_handshake(sess, vm_type):
+        attempts.append(1)
+
+    async def noop():
+        return
+
+    monkeypatch.setattr(client, "_http_json", fake_http)
+    monkeypatch.setattr(client, "_wake", fake_wake)
+    monkeypatch.setattr(client, "_noise_handshake", fake_handshake)
+    monkeypatch.setattr(client, "_receiver", noop)
+    monkeypatch.setattr(client, "_heartbeat", noop)
+    await client.connect(wake_confirm=0)
+    assert attempts == [1]
+    assert woke == []
+    await client.close()
+
+
+def test_usable_treats_only_disabled_as_hard_down():
+    from muse2api.drivers.protocol.client import MuseProtocolClient
+
+    base = {"status": "assigned", "endpoint_url": "wss://vm.example/"}
+    for state in ("UNKNOWN", "RUNNING", "SUSPENDED", "", None):
+        assert MuseProtocolClient._usable({**base, "vm_state": state}) is True
+    assert MuseProtocolClient._usable(
+        {**base, "vm_state": "DISABLED"}) is False
+    assert MuseProtocolClient._usable(
+        {"status": "assigning", "endpoint_url": "wss://vm.example/"}) is False
+
+
 # ------------------------------------------------------------ native tools
 def test_tools_to_commands_maps_openai_schema():
     from muse2api.drivers.protocol.driver import command_id_for_tool, tools_to_commands
