@@ -84,6 +84,57 @@ def test_image_b64(client, auth):
     assert r.json()["data"][0]["b64_json"]
 
 
+def _sse_events(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines()
+            if line.startswith("data: ")]
+
+
+def test_image_stream_emits_completed_event(client, auth):
+    """OpenAI-compatible relays (new-api) send stream=true for images; the
+    gateway answers with the gpt-image-1 SSE shape instead of a 400."""
+    with client.stream("POST", "/v1/images/generations", headers=auth,
+                       json={"prompt": "a cat", "stream": True}) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        body = "".join(response.iter_text())
+    events = _sse_events(body)
+    completed = [e for e in events if e["type"] == "image_generation.completed"]
+    assert len(completed) == 1
+    event = completed[0]
+    assert event["output_format"] == "png"
+    assert base64.b64decode(event["b64_json"])[:8] == b"\x89PNG\r\n\x1a\n"
+    assert "event: image_generation.completed" in body
+
+
+def test_image_stream_one_event_per_image(client, auth):
+    with client.stream("POST", "/v1/images/generations", headers=auth,
+                       json={"prompt": "a cat", "n": 2, "stream": True}) as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+    completed = [e for e in _sse_events(body)
+                 if e["type"] == "image_generation.completed"]
+    assert len(completed) == 2
+
+
+def test_image_stream_url_response_saves_media(client, auth):
+    with client.stream("POST", "/v1/images/generations", headers=auth,
+                       json={"prompt": "a cat", "stream": True,
+                             "response_format": "url"}) as response:
+        body = "".join(response.iter_text())
+    event = [e for e in _sse_events(body)
+             if e["type"] == "image_generation.completed"][0]
+    assert event["b64_json"]
+    path = event["url"].split("testserver", 1)[1]
+    assert client.get(path).status_code == 200
+
+
+def test_image_stream_and_async_conflict(client, auth):
+    r = client.post("/v1/images/generations", headers=auth,
+                    json={"prompt": "a cat", "stream": True, "async": True})
+    assert r.status_code == 400
+    assert r.json()["error"]["param"] == "stream"
+
+
 def _fake_matting(client, monkeypatch) -> list[bytes]:
     seen: list[bytes] = []
 
@@ -339,6 +390,43 @@ def test_image_generation_reference_list_limit(client, auth):
     r = client.post("/v1/images/generations", headers=auth,
                     json={"prompt": "x", "image": [_PNG_DATA_URL] * 5})
     assert r.status_code == 400
+
+
+def test_image_reference_alias_shapes(client, auth, monkeypatch):
+    """Clients and relays name the reference field differently; every common
+    shape must reach the upstream instead of being silently dropped."""
+    seen = _capture_image_requests(client, monkeypatch)
+    cases = [
+        {"images": [_PNG_DATA_URL]},
+        {"image_url": _PNG_DATA_URL},
+        {"images": [{"image_url": {"url": _PNG_DATA_URL}}]},
+        {"image": [{"url": _PNG_DATA_URL}]},
+        {"reference_image": _PNG_DATA_URL},
+        {"input_image": {"data": _PNG_DATA_URL.split(",", 1)[1]}},
+    ]
+    for extra in cases:
+        r = client.post("/v1/images/generations", headers=auth,
+                        json={"prompt": "x", **extra})
+        assert r.status_code == 200, (extra, r.text[:200])
+        refs = seen[-1].reference_images
+        assert refs and refs[0].data == b"\x89PNG-ref", extra
+
+
+def test_load_image_ref_accepts_wrapped_base64():
+    """Bare base64 with newlines or the URL-safe alphabet must decode."""
+    import asyncio
+
+    from muse2api.core.media import load_image_ref
+
+    payload = b"wrapped-payload"
+    plain = base64.b64encode(payload).decode()
+    wrapped = "\n".join(plain[i:i + 8] for i in range(0, len(plain), 8))
+    data, mime = asyncio.run(load_image_ref(wrapped))
+    assert data == payload and mime == "image/png"
+    urlsafe = plain.replace("+", "-").replace("/", "_").rstrip("=")
+    data, _ = asyncio.run(load_image_ref(urlsafe))
+    assert data == payload
+
 
 
 def test_image_edits_multipart(client, auth, monkeypatch):

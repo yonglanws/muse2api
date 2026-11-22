@@ -163,12 +163,16 @@ def test_image_response_echoes_generation_fields(tmp_path):
     assert body["quality"] == "high"
 
 
-def test_image_stream_is_rejected(tmp_path):
+def test_image_stream_is_accepted(tmp_path):
+    """0.18.3: stream=true is served as the gpt-image-1 SSE shape (new-api
+    sends it for images); it used to be a 400."""
     client = _mock_client(tmp_path)
-    r = client.post("/v1/images/generations", headers=_auth(), json={
-        "prompt": "a red square", "stream": True})
-    assert r.status_code == 400
-    assert r.json()["error"]["param"] == "stream"
+    with client.stream("POST", "/v1/images/generations", headers=_auth(),
+                       json={"prompt": "a red square", "stream": True}) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        body = "".join(r.iter_text())
+    assert "image_generation.completed" in body
 
 
 # --- Files -----------------------------------------------------------------

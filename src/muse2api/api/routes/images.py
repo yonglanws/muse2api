@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
+import logging
 import mimetypes
 import time
 from dataclasses import replace
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
@@ -22,8 +27,65 @@ from ..schemas import ImageGenerationRequest
 
 router = APIRouter(tags=["images"], dependencies=[Depends(require_api_key)])
 
+log = logging.getLogger(__name__)
+
 # Reference images attached to one muse.ai message.
 MAX_REFERENCE_IMAGES = 4
+
+# Field names clients and relays use for reference images. Only ``image`` is
+# OpenAI-standard; the rest are seen in the wild (new-api exposes ``images``,
+# Gemini-style clients use image_url / inline_data objects).
+REFERENCE_FIELDS = (
+    "image", "images", "image_url", "image_urls", "reference_image",
+    "reference_images", "ref_image", "init_image", "input_image",
+    "input_images",
+)
+
+_REF_OBJECT_KEYS = ("url", "image_url", "image_urls", "data", "b64_json",
+                    "base64", "file_data", "image", "images", "content")
+
+
+def _as_ref_strings(value: Any) -> list[str]:
+    """Flatten a reference value into URL/data-URL/base64 strings.
+
+    Accepts strings, lists and the object shapes relays emit, e.g.
+    ``{"url": ...}``, ``{"image_url": {"url": ...}}`` or ``{"data": ...}``.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        for key in _REF_OBJECT_KEYS:
+            if key in value:
+                return _as_ref_strings(value[key])
+        raise InvalidRequest(
+            "unsupported image reference object; expected url/image_url/data")
+    if isinstance(value, (list, tuple)):
+        refs: list[str] = []
+        for item in value:
+            refs.extend(_as_ref_strings(item))
+        return refs
+    raise InvalidRequest("unsupported image reference value")
+
+
+def collect_reference_refs(body: ImageGenerationRequest) -> list[str]:
+    """Every reference image on the request, from any supported field name."""
+    extras = getattr(body, "model_extra", None) or {}
+    refs: list[str] = []
+    for name in REFERENCE_FIELDS:
+        value = getattr(body, name, None)
+        if value is None:
+            value = extras.get(name)
+        refs.extend(ref for ref in _as_ref_strings(value) if ref)
+    suspicious = sorted(
+        key for key in extras
+        if "image" in key.lower() and key not in REFERENCE_FIELDS)
+    if suspicious:
+        log.warning("image request carried unrecognised field(s) %s; supported "
+                    "reference fields: %s", suspicious,
+                    ", ".join(REFERENCE_FIELDS))
+    return refs
 
 # Asking muse.ai for a "transparent background" makes it reply with text only, so
 # ask for an easy-to-cut plain background and remove it locally instead.
@@ -54,23 +116,76 @@ def _task_view(task: Task) -> dict:
 
 
 async def _generate(body: ImageGenerationRequest, refs: list[InputImage],
-                    request: Request, svc: Services) -> dict:
+                    request: Request, svc: Services) -> dict | StreamingResponse:
     request.state.model = resolve_model(body.model, "image").id  # actual model
-    if body.stream:
-        # OpenAI streams partial images for gpt-image-1; muse.ai paints the
-        # whole image in one agent reply, so there are no partial frames.
-        raise InvalidRequest(
-            "streaming image generation is not supported; set stream=false",
-            param="stream")
     if len(refs) > MAX_REFERENCE_IMAGES:
         raise InvalidRequest(f"at most {MAX_REFERENCE_IMAGES} reference images are supported")
     if body.background == "transparent" and body.output_format == "jpeg":
         raise InvalidRequest(
             "transparent backgrounds require output_format 'png' or 'webp'",
             param="output_format")
+    if body.stream and body.async_:
+        raise InvalidRequest(
+            "stream and async cannot be combined; pick one", param="stream")
     if body.async_:
         return _submit(body, refs, request, svc)
+    if body.stream:
+        return await _stream(body, refs, request, svc)
     return await _run(body, refs, public_base(request), svc)
+
+
+async def _stream(body: ImageGenerationRequest, refs: list[InputImage],
+                  request: Request, svc: Services) -> StreamingResponse:
+    """OpenAI image streaming (gpt-image-1 shape): one
+    ``image_generation.completed`` event per image carrying ``b64_json``.
+
+    muse.ai paints the whole image in one agent reply, so there are no partial
+    frames; keepalive comments cover the (often 10-60 s) wait.  new-api and
+    other OpenAI-compatible relays send ``stream: true`` here, so answering
+    with SSE is the compatible behaviour (a 400 used to break those channels).
+    """
+    base = public_base(request)
+    inner = body.model_copy(update={"response_format": "b64_json"})
+    work = asyncio.create_task(_run(inner, refs, base, svc))
+
+    async def events():
+        try:
+            while True:
+                try:
+                    response = await asyncio.wait_for(
+                        asyncio.shield(work), timeout=10.0)
+                    break
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+            fmt = response.get("output_format") or "png"
+            mime = f"image/{'jpeg' if fmt == 'jpeg' else fmt}"
+            for item in response.get("data") or []:
+                event = {
+                    "type": "image_generation.completed",
+                    "b64_json": item.get("b64_json"),
+                    "created_at": response.get("created") or int(time.time()),
+                    "output_format": fmt,
+                }
+                if body.response_format == "url" and item.get("b64_json"):
+                    data = base64.b64decode(item["b64_json"])
+                    name = svc.media.save(data, mime, prefix="img")
+                    event["url"] = f"{base}/v1/media/{name}"
+                for key in ("size", "quality", "background"):
+                    if response.get(key) is not None:
+                        event[key] = response[key]
+                yield (f"event: image_generation.completed\n"
+                       f"data: {json.dumps(event, ensure_ascii=False)}\n\n")
+        except Exception as exc:  # noqa: BLE001 - headers are already sent
+            payload = {"type": "error",
+                       "error": {"message": str(exc), "type": "server_error"}}
+            yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        finally:
+            if not work.done():
+                work.cancel()
+
+    return StreamingResponse(
+        events(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def _submit(body: ImageGenerationRequest, refs: list[InputImage], request: Request,
@@ -137,11 +252,12 @@ async def _run(body: ImageGenerationRequest, refs: list[InputImage], base: str,
     return response
 
 
-@router.post("/v1/images/generations")
+@router.post("/v1/images/generations", response_model=None)
 async def generate_images(body: ImageGenerationRequest, request: Request,
-                          svc: Services = Depends(get_services)) -> dict:
-    refs = body.image if isinstance(body.image, list) else [body.image] if body.image else []
-    loaded = [InputImage(*(await load_image_ref(ref))) for ref in refs]
+                          svc: Services = Depends(get_services)
+                          ) -> dict | StreamingResponse:
+    loaded = [InputImage(*(await load_image_ref(ref)))
+              for ref in collect_reference_refs(body)]
     return await _generate(body, loaded, request, svc)
 
 
@@ -169,11 +285,16 @@ async def _multipart_request(request: Request, *,
         if not mime.startswith("image/"):
             mime = mimetypes.guess_type(f.filename or "")[0] or "image/png"
         refs.append(InputImage(data=await f.read(), mime=mime))
+    # Multipart forms may mix uploaded files with URL/data-URL fields.
+    for ref in collect_reference_refs(body):
+        refs.append(InputImage(*(await load_image_ref(ref))))
     return body, refs
 
 
-@router.post("/v1/images/edits")
-async def edit_images(request: Request, svc: Services = Depends(get_services)) -> dict:
+@router.post("/v1/images/edits", response_model=None)
+async def edit_images(request: Request,
+                      svc: Services = Depends(get_services)
+                      ) -> dict | StreamingResponse:
     """OpenAI-style multipart edit: ``image`` / ``image[]`` files plus a prompt.
 
     muse.ai has no inpainting, so the images act as references for a new image
@@ -183,8 +304,10 @@ async def edit_images(request: Request, svc: Services = Depends(get_services)) -
     return await _generate(body, refs, request, svc)
 
 
-@router.post("/v1/images/variations")
-async def create_variation(request: Request, svc: Services = Depends(get_services)) -> dict:
+@router.post("/v1/images/variations", response_model=None)
+async def create_variation(request: Request,
+                           svc: Services = Depends(get_services)
+                           ) -> dict | StreamingResponse:
     """OpenAI image variations, expressed as a reference-image generation."""
     body, refs = await _multipart_request(request, default_prompt=(
         "Create a new variation of the uploaded image, preserving its subject "

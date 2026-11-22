@@ -162,19 +162,30 @@ async def _fetch_public_image(url: str, *, timeout: float) -> tuple[bytes, str]:
             f"attachment URL could not be fetched (HTTP {exc})") from exc
 
 
+def _decode_base64(payload: str) -> bytes:
+    """Tolerant base64 decode: strips whitespace/newlines, accepts the URL-safe
+    alphabet and restores missing padding (clients send all three variants)."""
+    cleaned = "".join(payload.split()).replace("-", "+").replace("_", "/")
+    cleaned += "=" * (-len(cleaned) % 4)
+    return base64.b64decode(cleaned, validate=True)
+
+
 async def load_image_ref(ref: str, *, timeout: float = 20.0) -> tuple[bytes, str]:
-    """Decode a data URL or download an http(s) URL. Returns ``(bytes, mime)``."""
+    """Decode a data URL, a bare base64 string or download an http(s) URL.
+
+    Returns ``(bytes, mime)``.
+    """
     ref = ref.strip()
     if ref.startswith("data:"):
         header, _, payload = ref.partition(",")
         mime = header[5:].split(";")[0] or "image/png"
         try:
-            return base64.b64decode(payload), mime
+            return _decode_base64(payload), mime
         except ValueError as exc:
             raise InvalidRequest("invalid base64 attachment data") from exc
     if ref.startswith(("http://", "https://")):
         return await _fetch_public_image(ref, timeout=timeout)
     try:
-        return base64.b64decode(ref, validate=True), "image/png"
+        return _decode_base64(ref), "image/png"
     except ValueError as exc:
         raise InvalidRequest("image must be a data URL, http(s) URL or base64 string") from exc

@@ -112,8 +112,12 @@ class ImageGenerationRequest(_Lenient):
     output_compression: int | None = Field(default=None, ge=0, le=100)
     stream: bool = False
     safety_identifier: str | None = None
-    image: str | list[str] | None = Field(
+    # Reference image(s). Clients and relays use several shapes; the images
+    # route normalises strings, lists and {url|image_url|data|b64_json} objects.
+    image: Any | None = Field(
         default=None, description="Reference image(s) as data URL, http(s) URL or base64 (max 4)")
+    images: Any | None = Field(
+        default=None, description="Alias for image (new-api/Gemini-style relays)")
     # A sync call can outlive a proxy's timeout (Cloudflare cuts at ~100 s with 524), so
     # "async": true returns a task to poll at GET /v1/images/generations/{task_id}.
     async_: bool = Field(default=False, alias="async")

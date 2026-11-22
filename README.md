@@ -286,7 +286,7 @@ client.responses.create(
 | POST/GET/DELETE | `/v1/conversations[/{id}]` | OpenAI Conversations API：创建、检索、改元数据、删除 |
 | GET/POST | `/v1/conversations/{id}/items` | 分页读取 / 追加会话 items |
 | GET/DELETE | `/v1/conversations/{id}/items/{item_id}` | 检索 / 删除单个 item |
-| POST | `/v1/images/generations` · GET `/{id}` | 文生图；`"async": true` 返回任务 |
+| POST | `/v1/images/generations` · GET `/{id}` | 文生图；`"async": true` 返回任务，`"stream": true` 返回 `image_generation.completed` SSE |
 | POST | `/v1/images/edits` | multipart 参考图 + 提示词 |
 | POST | `/v1/videos` | Sora 形状创建（JSON 或 multipart，含 `input_reference`） |
 | GET | `/v1/videos` · `/{id}` · `/{id}/content` | 分页列表 / 检索 / 下载视频（`variant=video|thumbnail|spritesheet`） |
@@ -314,7 +314,8 @@ curl http://localhost:18610/v1/images/generations \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"prompt":"雨夜的赛博朋克街道","size":"16:9"}'
 
-# 参考图
+# 参考图（最多 4 张；字段名 image / images / image_url / reference_image 等均可，
+# 支持 data URL、http(s) 链接、裸 base64（含换行/URL-safe）；也可用 /v1/images/edits 上传文件）
 curl http://localhost:18610/v1/images/generations \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"prompt":"模特穿着这件卫衣，棚拍","image":"data:image/jpeg;base64,..."}'
@@ -328,6 +329,12 @@ curl http://localhost:18610/v1/images/generations \
 curl http://localhost:18610/v1/images/generations \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
   -d '{"prompt":"一只红狐狸","async":true}'
+
+# 流式图片（OpenAI gpt-image-1 形状；new-api 等中转默认会带 stream:true）
+# 返回 SSE：event: image_generation.completed，data 里带 b64_json（url 模式下另带 url）
+curl -N http://localhost:18610/v1/images/generations \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"prompt":"一只红狐狸","stream":true}'
 
 # 文生视频（Sora 形状；也接受 multipart 与 input_reference）
 curl http://localhost:18610/v1/videos \
