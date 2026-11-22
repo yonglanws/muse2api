@@ -656,13 +656,15 @@ class MuseProtocolClient:
     async def mark_seen(self, thread_id: str) -> None:
         """Mark a thread's transcript as read (web: ``chat.mark_seen``).
 
-        Path carries the thread id; body is empty.  Called after every
-        completed gateway turn so sessions never keep an unread badge in the
-        owner's muse.ai UI.  Best-effort: older builds may not know the route.
+        Path carries the thread id and the body is empty: the current daemon
+        answers 400 ``invalid_params`` / "use an explicit chat_id on the chats
+        API" to any body that names the thread again (probe 96, 2026-11-22).
+        Called after every completed gateway turn so sessions never keep an
+        unread badge in the owner's muse.ai UI.  Best-effort: older builds may
+        not know the route.
         """
-        # The web sends the id both in the path and the body; mirror it.
         response = await self.request(
-            "POST", f"/api/chat/{thread_id}/seen", {"thread_id": thread_id}, 10)
+            "POST", f"/api/chat/{thread_id}/seen", {}, 10)
         if response.status not in (200, 204):
             raise UpstreamError(f"chat.mark_seen returned HTTP {response.status}")
 

@@ -1,9 +1,9 @@
 """0.18.0: web-chat read side — mark_seen parity, session history, timezone guard.
 
-Recon basis (web bundle, 2026-11-17):
-- the web client calls ``chat.mark_seen`` ({thread_id} in the path) whenever a
-  transcript is on screen, so no thread keeps an unread badge; gateway turns
-  are read by definition and must do the same;
+Recon basis (web bundle, 2026-11-17; request shape re-probed 2026-11-22):
+- the web client calls ``chat.mark_seen`` (thread id in the path, empty body)
+  whenever a transcript is on screen, so no thread keeps an unread badge;
+  gateway turns are read by definition and must do the same;
 - ``chat.history`` pages with ``{limit, after_seq}`` and answers with
   ``chat_events`` (each event carries ``seq``/``role``) — the read side the
   gateway lacked;
@@ -52,6 +52,28 @@ async def test_mark_seen_failure_is_tolerated():
     # Let the failing background task run; the exception must be swallowed.
     for _ in range(20):
         await asyncio.sleep(0)
+
+
+async def test_client_mark_seen_sends_empty_body():
+    """The daemon rejects a body that names the thread again (400
+    ``use an explicit chat_id on the chats API``; probe 96). The id belongs
+    in the path only."""
+    from muse2api.drivers.protocol.client import MuseProtocolClient
+
+    client = MuseProtocolClient({})
+    seen: dict = {}
+
+    class _Response:
+        status = 200
+
+    async def fake_request(method: str, path: str, body, timeout: float = 15):
+        seen.update({"method": method, "path": path, "body": body})
+        return _Response()
+
+    client.request = fake_request  # type: ignore[method-assign]
+    await client.mark_seen("sess-9")
+    assert seen == {"method": "POST", "path": "/api/chat/sess-9/seen",
+                    "body": {}}
 
 
 # ------------------------------------------------------------- session history
